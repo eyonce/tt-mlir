@@ -208,7 +208,7 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
         options.maxDstPhysicalSizeTiles;
   }
   pm.addPass(d2m::createD2MElementwiseFusion(elementwiseFusionOptions));
-  pm.addPass(createLinalgElementwiseOpFusionPass());
+  // pm.addPass(createLinalgElementwiseOpFusionPass());
   pm.addPass(mlir::createCanonicalizerPass());
   if (options.ttnnMode) {
     bufferization::OneShotBufferizePassOptions bufferizePassOptions;
@@ -235,6 +235,9 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
     allocateOptions.testBufferSizePolicy = options.testBufferSizePolicy;
   }
   pm.addPass(d2m::createD2MAllocate(allocateOptions));
+
+  // Decompose block_mask ops now that we're in memref space.
+  pm.addPass(d2m::createD2MDecomposeMasking());
 
   pm.addPass(createCanonicalizerPassWithOptions(options));
   d2m::D2MGenericApplyInterchangeOptions applyInterchangeOptions;
@@ -336,11 +339,8 @@ void createTTIRToTTMetalPipeline(OpPassManager &pm,
 
   // Run regular ttir to ttmetal pipelines on IR in DeviceModule.
   createTTIRToTTMetalFrontendPipeline(devicePm, options);
-  if (options.useUnifiedMiddleendPipeline) {
-    createTTIRToTTMetalUnifiedMiddleendPipeline(devicePm, options);
-  } else {
-    createTTIRToTTMetalMiddleendPipeline(devicePm, options);
-  }
+  // createTTIRToTTMetalMiddleendPipeline(devicePm, options);
+  createTTIRToTTMetalUnifiedMiddleendPipeline(devicePm, options);
   createTTIRToTTMetalBackendPipeline(devicePm, options);
 
   // Run lowering to LLVM pass.

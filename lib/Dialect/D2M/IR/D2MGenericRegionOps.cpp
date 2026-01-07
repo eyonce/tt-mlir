@@ -549,6 +549,7 @@ mlir::LogicalResult RemoteLoadOp::bufferize(
   auto cbBufferType =
       mlir::cast<bufferization::TensorLikeType>(getCbType())
           .getBufferType(options, [&]() { return emitOpError(); });
+  // NOLINTNEXTLINE
   if (failed(cbBufferType)) {
     return mlir::failure();
   }
@@ -559,11 +560,13 @@ mlir::LogicalResult RemoteLoadOp::bufferize(
   // Handle the memref/tensor operand - similar to DMAOp
   mlir::FailureOr<Value> memrefBuffer =
       mlir::bufferization::getBuffer(rewriter, getMemref(), options, state);
+  // NOLINTNEXTLINE
   if (failed(memrefBuffer)) {
     return memrefBuffer;
   }
 
   // Create a new RemoteLoadOp with bufferized operands
+  // NOLINTNEXTLINE
   mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteLoadOp>(
       rewriter, *this, cbBuffer.getResult(), *memrefBuffer, getIndices(),
       getMcastStartIndex(), getMcastShape());
@@ -624,6 +627,7 @@ mlir::LogicalResult RemoteStoreOp::bufferize(
   // Handle the memref/tensor operand - similar to DMAOp
   mlir::FailureOr<Value> memrefBuffer =
       mlir::bufferization::getBuffer(rewriter, getMemref(), options, state);
+  // NOLINTNEXTLINE
   if (failed(memrefBuffer)) {
     return memrefBuffer;
   }
@@ -632,6 +636,7 @@ mlir::LogicalResult RemoteStoreOp::bufferize(
   auto cbBufferType =
       mlir::cast<bufferization::TensorLikeType>(getCbType())
           .getBufferType(options, [&]() { return emitOpError(); });
+  // NOLINTNEXTLINE
   if (failed(cbBufferType)) {
     return mlir::failure();
   }
@@ -640,6 +645,7 @@ mlir::LogicalResult RemoteStoreOp::bufferize(
       getLoc(), *cbBufferType, getCb());
 
   // Create a new RemoteStoreOp with bufferized operands
+  // NOLINTNEXTLINE
   mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteStoreOp>(
       rewriter, *this, *memrefBuffer, getIndices(), cbBuffer.getResult(),
       getMcastStartIndex(), getMcastShape());

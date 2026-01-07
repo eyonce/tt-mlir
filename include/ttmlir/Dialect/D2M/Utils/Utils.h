@@ -5,8 +5,8 @@
 #ifndef TTMLIR_DIALECT_D2M_UTILS_UTILS_H
 #define TTMLIR_DIALECT_D2M_UTILS_UTILS_H
 
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 namespace mlir::tt::d2m::utils {
@@ -35,7 +35,7 @@ computeDimConstraints(mlir::ArrayRef<mlir::AffineMap> indexingMaps,
 // indexing map, creates an IterIndexOp for dimension expressions or a
 // ConstantIndexOp for constant expressions.
 SmallVector<Value> buildGridIndices(OpBuilder &builder, Location loc,
-                                     AffineMap indexingMap);
+                                    AffineMap indexingMap);
 
 } // namespace mlir::tt::d2m::utils
 
