@@ -880,6 +880,28 @@ def D2MGenerateOuterLoops : Pass<"d2m-generate-outer-loops", "::mlir::ModuleOp">
   let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
 }
 
+def D2MLowerMulticastLoads : Pass<"d2m-lower-multicast-loads", "::mlir::ModuleOp"> {
+  let summary = "Lower high-level multicast remote loads to low-level form.";
+  let description = [{
+    This pass converts RemoteLoadOp operations from high-level multicast form
+    (using mcast[dims]) to low-level multicast form (using mcore[...] mshape[...]).
+
+    The high-level form specifies which grid dimensions participate in multicast
+    as dimension indices. The low-level form provides explicit core start coordinates
+    and multicast shape values for each grid dimension.
+
+    Example:
+    ```mlir
+    // Before (high-level form):
+    d2m.remote_load %memref[%i, %j] mcast[%c0] : ...
+
+    // After (low-level form, assuming grid shape [4, 8]):
+    d2m.remote_load %memref[%i, %j] mcore[%c1, %core_x] mshape[%c3, %c1] : ...
+    ```
+  }];
+  let dependentDialects = ["::mlir::tt::d2m::D2MDialect", "::mlir::arith::ArithDialect"];
+}
+
 def D2MSplitUnifiedThread : Pass<"d2m-split-unified-thread", "::mlir::ModuleOp"> {
   let summary = "Split unified thread regions.";
   let description = [{
@@ -888,10 +910,129 @@ def D2MSplitUnifiedThread : Pass<"d2m-split-unified-thread", "::mlir::ModuleOp">
   let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
 }
 
+def D2MPreallocateMcastSemaphores : Pass<"d2m-preallocate-mcast-semaphores", "::mlir::ModuleOp"> {
+  let summary = "Pre-allocate semaphores for multicast DMA operations.";
+  let description = [{
+    This pass pre-allocates semaphores for RemoteLoadOp operations that will
+    require multicast synchronization. It runs before d2m-schedule-dma to ensure
+    that each multicast operation has its own dedicated semaphores that are
+    correctly mapped across all regions of the generic op.
+
+    The pass identifies RemoteLoadOps that have multicast parameters (mcastStartIndex
+    and mcastShape) and creates two semaphore block arguments for each:
+    - receiversReadySemaphore: used by receivers to signal they are ready
+    - senderFinishedSemaphore: used by sender to signal completion
+
+    The indices of these semaphores are stored as attributes on the RemoteLoadOp
+    so that downstream passes (d2m-schedule-dma and d2m-lower-load-store-ops-to-dma)
+    can correctly use them even after region cloning/splitting.
+
+    Example:
+    ```mlir
+    // Before:
+    d2m.generic {threads = [#d2m.thread<datamovement>, #d2m.thread<compute>]} {
+    ^dm0(%cb0: !d2m.cb<...>, %cb1: !d2m.cb<...>):
+      d2m.remote_load %cb0, %memref[%i] core[%c0] mcast[%c4] : ...
+    }, { ... }
+
+    // After (semaphores pre-allocated):
+    d2m.generic {threads = [#d2m.thread<datamovement>, #d2m.thread<compute>]} {
+    ^dm0(%cb0: !d2m.cb<...>, %cb1: !d2m.cb<...>, %sem0: !d2m.semaphore, %sem1: !d2m.semaphore):
+      d2m.remote_load %cb0, %memref[%i] core[%c0] mcast[%c4]
+        {preallocated_semaphores = [2, 3]} : ...
+    }, {
+    ^compute0(%cb0: !d2m.cb<...>, %cb1: !d2m.cb<...>, %sem0: !d2m.semaphore, %sem1: !d2m.semaphore):
+      ...
+    }
+    ```
+  }];
+  let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
+}
+
+def D2MScheduleDMA : Pass<"d2m-schedule-dma", "::mlir::ModuleOp"> {
+  let summary = "Schedule DMA operations across multiple hardware threads.";
+  let description = [{
+    This pass takes a single datamovement region from a d2m.generic op and splits
+    it into N separate datamovement regions, distributing remote_load and remote_store
+    operations across hardware datamovement threads for balanced execution.
+
+    The pass runs after d2m-split-unified-thread which produces a generic op with
+    a single datamovement region and a compute region. This pass analyzes the
+    remote_load and remote_store operations in the datamovement region and
+    distributes them across available hardware datamovement threads (typically 2
+    on Wormhole).
+
+    The scheduling strategy aims to balance the workload across threads by:
+    1. Counting the number of DMA operations per operand/CB
+    2. Assigning each operand's DMA operations to a thread to balance total work
+    3. Creating separate regions for each thread's assigned work
+
+    Example transformation:
+    ```mlir
+    // Before (single datamovement region with 2 remote_loads):
+    d2m.generic {threads = [#d2m.thread<datamovement>, #d2m.thread<compute>]}
+        ins(%stream0, %stream1 : ...) outs(%alloc : ...) {
+    ^datamovement0(%cb0, %cb1, %cb2):
+      scf.for ... {
+        d2m.remote_load %cb0, %stream0[...]  // Load for operand 0
+        d2m.remote_load %cb1, %stream1[...]  // Load for operand 1
+      }
+    }, {
+    ^compute0(...):
+      // compute ops
+    }
+
+    // After (split into 2 datamovement regions):
+    d2m.generic {threads = [#d2m.thread<datamovement>, #d2m.thread<datamovement>, #d2m.thread<compute>]}
+        ins(%stream0, %stream1 : ...) outs(%alloc : ...) {
+    ^datamovement0(%cb0, %cb1, %cb2):
+      scf.for ... {
+        d2m.remote_load %cb0, %stream0[...]  // Thread 0 handles operand 0
+      }
+    }, {
+    ^datamovement1(%cb0, %cb1, %cb2):
+      scf.for ... {
+        d2m.remote_load %cb1, %stream1[...]  // Thread 1 handles operand 1
+      }
+    }, {
+    ^compute0(...):
+      // compute ops
+    }
+    ```
+
+    If there are more DMA operands than available threads, operations are grouped
+    to balance work. If there are fewer operands than threads, some threads may
+    be empty (and can be eliminated by later passes).
+  }];
+  let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
+}
+
 def D2MLowerLoadStoreOpsToDMA : Pass<"d2m-lower-load-store-ops-to-dma", "::mlir::ModuleOp"> {
   let summary = "Lower D2M load/store operations to DMA operations.";
   let description = [{
     This pass performs lowering of D2M load/store operations to DMA operations.
+  }];
+  let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
+  let options = [
+    Option<"debugCoalescingInference", "debug-d2m-coalescing-inference", "bool",
+           /*default=*/"false",
+           "Enable debug mode for coalescing inference. Runs both analytical and "
+           "sampling-based coalescing checks and prints debug output comparing them.">,
+  ];
+}
+
+def D2MDecoupleLoadStoreOpsFromCompute : Pass<"d2m-decouple-load-store-ops-from-compute", "::mlir::ModuleOp"> {
+  let summary = "Decouple load/store operations from compute.";
+  let description = [{
+    This pass decouples load/store operations from compute operations.
+  }];
+  let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
+}
+
+def D2MConvertLocalLoadStoreOpsToAliasedCBs : Pass<"d2m-convert-local-load-store-ops-to-aliased-cbs", "::mlir::ModuleOp"> {
+  let summary = "Convert local load/store operations to aliased circular buffers.";
+  let description = [{
+    This pass converts local load/store operations to aliased circular buffers.
   }];
   let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
 }

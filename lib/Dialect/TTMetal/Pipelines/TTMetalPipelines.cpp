@@ -96,6 +96,7 @@ void createTTIRToTTMetalFrontendPipeline(
     toD2MOptions.defaultOutputMemSpace = options.defaultOutputMemSpace;
     toD2MOptions.ttnnMode = options.ttnnMode;
     toD2MOptions.collapseTensorsTo2D = options.collapseTensors;
+    toD2MOptions.enableMulticastInference = options.enableMulticastInference;
   }
   pm.addPass(tt::createTTIRToD2MPass(toD2MOptions));
   pm.addPass(d2m::createD2MScalarizeConstTensors());
@@ -263,8 +264,6 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   { opSchedulerOptions.enableOpScheduler = true; }
   pm.addPass(d2m::createD2MOpScheduler(opSchedulerOptions));
 
-  pm.addPass(d2m::createD2MInsertLoadStoreOps());
-
   d2m::D2MInsertDstRegisterAccessOptions insertDstRegisterAccessOptions;
   {
     insertDstRegisterAccessOptions.useTileMatmul = options.useTileMatmul;
@@ -273,8 +272,6 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   }
   pm.addPass(
       d2m::createD2MInsertDstRegisterAccess(insertDstRegisterAccessOptions));
-
-  pm.addPass(d2m::createD2MGenerateOuterLoops());
 
   pm.addPass(d2m::createD2MSFPUTileLoopFission());
   pm.addPass(mlir::createCanonicalizerPass());
@@ -286,8 +283,26 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   pm.addPass(memref::createFoldMemRefAliasOpsPass());
   pm.addPass(mlir::createLowerAffinePass());
   pm.addPass(d2m::createD2MGenericLinearizeMemref());
+
+  // Frontend of DMA lowering pipeline; lower abstract
+  // remote loads and stores to explicit CB form split the
+  // unified thread into separate compute and datamovement
+  // threads.
+  pm.addPass(d2m::createD2MGenerateOuterLoops());
+  pm.addPass(d2m::createD2MLowerMulticastLoads());
+  pm.addPass(d2m::createD2MConvertLocalLoadStoreOpsToAliasedCBs());
+  pm.addPass(d2m::createD2MDecoupleLoadStoreOpsFromCompute());
   pm.addPass(d2m::createD2MSplitUnifiedThread());
+
+  // Backend of DMA lowering pipeline; generic ops are now
+  // in split compute-dma form. All remote loads and stores
+  // are lowered to concrete dma ops (dma_read, dma_write,
+  // dma_wait, etc.) implementable by D2MToTTKernel lowering
+  // pass.
+  pm.addPass(d2m::createD2MPreallocateMcastSemaphores());
+  pm.addPass(d2m::createD2MScheduleDMA());
   pm.addPass(d2m::createD2MLowerLoadStoreOpsToDMA());
+
   pm.addPass(createCanonicalizerPassWithOptions(options));
   createOptimizationPasses(pm, options);
   pm.addPass(d2m::createD2MGenericRegionsToFuncs());

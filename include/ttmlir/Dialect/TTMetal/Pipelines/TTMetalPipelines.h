@@ -169,6 +169,14 @@ struct TTIRToTTMetalPipelineOptions
       llvm::cl::desc("Enable operation scheduling optimization"),
       llvm::cl::init(true)};
 
+  // Option to enable/disable automatic multicast inference for reduction
+  // operations.
+  Option<bool> enableMulticastInference{
+      *this, "enable-multicast-inference",
+      llvm::cl::desc("Enable automatic multicast inference for reduction "
+                     "operations"),
+      llvm::cl::init(true)};
+
   // Option to use unified middleend pipeline instead of regular middleend
   // pipeline.
   Option<bool> useUnifiedMiddleendPipeline{

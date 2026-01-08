@@ -43,6 +43,79 @@ void AcquireDstOp::getAsmResultNames(
   setNameFn(getResult(), "dst");
 }
 
+void AcquireBufferOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "buffer");
+}
+
+bool AcquireBufferOp::bufferizesToMemoryRead(
+    mlir::OpOperand &, const mlir::bufferization::AnalysisState &) {
+  return false;
+}
+
+bool AcquireBufferOp::bufferizesToMemoryWrite(
+    mlir::OpOperand &, const mlir::bufferization::AnalysisState &) {
+  return false;
+}
+bool AcquireBufferOp::bufferizesToAllocation(Value) { return true; }
+
+mlir::bufferization::AliasingValueList
+AcquireBufferOp::getAliasingValues(mlir::OpOperand &,
+                                   const mlir::bufferization::AnalysisState &) {
+  mlir::bufferization::AliasingValueList result;
+  return result;
+}
+
+mlir::FailureOr<mlir::bufferization::BufferLikeType>
+AcquireBufferOp::getBufferType(
+    mlir::Value value, const mlir::bufferization::BufferizationOptions &,
+    const mlir::bufferization::BufferizationState &,
+    ::llvm::SmallVector<mlir::Value> &) {
+  if (value == getResult()) {
+    auto resultTensorType = mlir::cast<RankedTensorType>(value.getType());
+    return mlir::cast<bufferization::BufferLikeType>(MemRefType::get(
+        resultTensorType.getShape(), resultTensorType.getElementType(), nullptr,
+        ttcore::MemorySpaceAttr::get(resultTensorType.getContext(),
+                                     ttcore::MemorySpace::DeviceL1)));
+  }
+  return mlir::failure();
+}
+
+bool AcquireBufferOp::isNotConflicting(
+    mlir::OpOperand *, mlir::OpOperand *,
+    const mlir::bufferization::AnalysisState &) {
+  // Return true to avoid forcing out of place bufferization.
+  return true;
+}
+
+mlir::LogicalResult AcquireBufferOp::bufferize(
+    mlir::RewriterBase &rewriter,
+    const mlir::bufferization::BufferizationOptions &options,
+    mlir::bufferization::BufferizationState &state) {
+  if (getOperation()->getUses().empty()) {
+    rewriter.eraseOp(*this);
+    return mlir::success();
+  }
+
+  // Convert result type to memref type with L1 memory space
+  auto resultTensorType = mlir::cast<RankedTensorType>(getResult().getType());
+  Type resultBufferType = MemRefType::get(
+      resultTensorType.getShape(), resultTensorType.getElementType(), nullptr,
+      ttcore::MemorySpaceAttr::get(resultTensorType.getContext(),
+                                   ttcore::MemorySpace::DeviceL1));
+
+  // Create a new AcquireBufferOp with bufferized result type
+  // NOLINTNEXTLINE
+  mlir::bufferization::replaceOpWithNewBufferizedOp<AcquireBufferOp>(
+      rewriter, *this, resultBufferType, getOperandIndexAttr());
+
+  return mlir::success();
+}
+
+bool AcquireBufferOp::hasTensorSemantics() {
+  return mlir::isa<RankedTensorType>(getResult().getType());
+}
+
 // Helper to extract element type from ranked tensor or memref
 static Type getElemType(Type ty) {
   if (auto rt = dyn_cast<RankedTensorType>(ty)) {
@@ -343,7 +416,34 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
 
 ::mlir::LogicalResult RemoteLoadOp::verify() {
   auto shapedType = getShapedType();
-  auto cbType = mlir::cast<CBType>(getCb().getType());
+  bool hasCbOperand = static_cast<bool>(getCb());
+  bool hasResultValue = static_cast<bool>(getResult());
+
+  // Verify XOR constraint: exactly one of cb or result must be present
+  if (hasCbOperand == hasResultValue) {
+    if (hasCbOperand) {
+      return emitOpError(
+          "cannot have both circular buffer and result; exactly one must be "
+          "present");
+    }
+    return emitOpError(
+        "must have either circular buffer or result; exactly one must be "
+        "present");
+  }
+
+  // Verify that tensor parameters are not allowed in explicit CB form
+  if (isExplicitCBForm()) {
+    if (mlir::isa<RankedTensorType>(getMemref().getType())) {
+      return emitOpError(
+          "tensor parameters are not allowed in explicit CB form; memref "
+          "operand must be a memref type");
+    }
+    if (hasResultValue && mlir::isa<RankedTensorType>(getResult().getType())) {
+      return emitOpError(
+          "tensor parameters are not allowed in explicit CB form; result must "
+          "be a memref type");
+    }
+  }
 
   // Verify that the memref/tensor is remote (has device layout)
   if (!ttcore::hasDeviceLayout(getMemref())) {
@@ -372,46 +472,112 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
     return emitOpError("mcast shape requires mcast start index");
   }
 
-  // Verify CB type matches shard shape
-  auto deviceLayout = ttcore::getDeviceLayout(getMemref());
-  if (!deviceLayout) {
-    return emitOpError("failed to get device layout from memref/tensor");
+  // Verify mutual exclusivity between low-level and high-level multicast forms
+  if (!getMcastShape().empty() && !getMcastDims().empty()) {
+    return emitOpError(
+        "cannot use both low-level multicast (mcore/mshape) and high-level "
+        "multicast (mcast dims); they are mutually exclusive");
   }
 
-  auto shardShape = deviceLayout.getShardShape(shapedType);
-  auto cbUnderlyingType = cbType.getUnderlying();
-
-  // Verify CB underlying shape matches shard shape
-  if (cbUnderlyingType.getRank() != static_cast<int64_t>(shardShape.size())) {
-    return emitOpError("circular buffer underlying rank must match shard shape "
-                       "rank, got ")
-           << cbUnderlyingType.getRank() << " but expected "
-           << shardShape.size();
+  // Verify high-level mcast dimensions are constant indices
+  SmallVector<int64_t> mcastDimIndices;
+  for (Value dimValue : getMcastDims()) {
+    auto constantOp = dimValue.getDefiningOp<arith::ConstantOp>();
+    if (!constantOp) {
+      return emitOpError("mcast dimension must be a constant index");
+    }
+    auto indexAttr = mlir::dyn_cast<IntegerAttr>(constantOp.getValue());
+    if (!indexAttr) {
+      return emitOpError("mcast dimension must be an integer attribute");
+    }
+    mcastDimIndices.push_back(indexAttr.getInt());
   }
 
-  for (size_t i = 0; i < shardShape.size(); ++i) {
-    if (shardShape[i] != mlir::ShapedType::kDynamic &&
-        cbUnderlyingType.getDimSize(i) != mlir::ShapedType::kDynamic &&
-        shardShape[i] != cbUnderlyingType.getDimSize(i)) {
-      return emitOpError("circular buffer underlying shape must match shard "
-                         "shape at dimension ")
-             << i << ", got " << cbUnderlyingType.getDimSize(i)
-             << " but expected " << shardShape[i];
+  // Verify that memref references a generic op operand when inside a generic
+  if (auto genericOp = getOperation()->getParentOfType<GenericOp>()) {
+    Value memrefOperand = getMemref();
+    std::optional<unsigned> operandIndex;
+    for (auto [idx, operand] : llvm::enumerate(genericOp.getOperands())) {
+      if (operand == memrefOperand) {
+        operandIndex = idx;
+        break;
+      }
+    }
+    if (!operandIndex) {
+      return emitOpError(
+          "memref operand must reference one of the parent generic op's "
+          "operands directly");
+    }
+
+    // Verify mcast dimensions are reduction dimensions in the indexing map
+    if (!mcastDimIndices.empty()) {
+      AffineMap indexingMap = genericOp.getIndexingMap(*operandIndex);
+      ArrayAttr iteratorTypes = genericOp.getIteratorTypes();
+
+      for (int64_t gridDim : mcastDimIndices) {
+        if (gridDim < 0 ||
+            gridDim >= static_cast<int64_t>(indexingMap.getNumResults())) {
+          return emitOpError("mcast dimension index ")
+                 << gridDim << " is out of bounds for grid rank "
+                 << indexingMap.getNumResults();
+        }
+
+        AffineExpr expr = indexingMap.getResult(gridDim);
+        if (auto dimExpr = mlir::dyn_cast<AffineDimExpr>(expr)) {
+          int64_t iterDimPos = dimExpr.getPosition();
+          auto iterType =
+              mlir::cast<ttcore::IteratorTypeAttr>(iteratorTypes[iterDimPos]);
+          if (iterType.getValue() != ttcore::IteratorType::Reduction) {
+            return emitOpError("mcast dimension index ")
+                   << gridDim
+                   << " must correspond to a reduction iterator type, but "
+                      "found parallel";
+          }
+        }
+      }
     }
   }
 
-  // Verify element types match
-  Type cbElementType = cbUnderlyingType.getElementType();
-  Type shapedElementType = shapedType.getElementType();
-  if (cbElementType != shapedElementType) {
-    return emitOpError(
-        "circular buffer element type must match memref/tensor element type");
-  }
+  // CB-specific verification (only when CB is present)
+  if (hasCbOperand) {
+    auto cbType = mlir::cast<CBType>(getCb().getType());
 
-  // Verify that the result type matches the circular buffer's underlying type
-  if (cbUnderlyingType != getResult().getType()) {
-    return emitOpError() << "result type does not match circular buffer's "
-                            "wrapped memref/tensor type";
+    // Verify CB type matches shard shape
+    auto deviceLayout = ttcore::getDeviceLayout(getMemref());
+    if (!deviceLayout) {
+      return emitOpError("failed to get device layout from memref/tensor");
+    }
+
+    auto shardShape = deviceLayout.getShardShape(shapedType);
+    auto cbUnderlyingType = cbType.getUnderlying();
+
+    // Verify CB underlying shape matches shard shape
+    if (cbUnderlyingType.getRank() != static_cast<int64_t>(shardShape.size())) {
+      return emitOpError(
+                 "circular buffer underlying rank must match shard shape "
+                 "rank, got ")
+             << cbUnderlyingType.getRank() << " but expected "
+             << shardShape.size();
+    }
+
+    for (size_t i = 0; i < shardShape.size(); ++i) {
+      if (shardShape[i] != mlir::ShapedType::kDynamic &&
+          cbUnderlyingType.getDimSize(i) != mlir::ShapedType::kDynamic &&
+          shardShape[i] != cbUnderlyingType.getDimSize(i)) {
+        return emitOpError("circular buffer underlying shape must match shard "
+                           "shape at dimension ")
+               << i << ", got " << cbUnderlyingType.getDimSize(i)
+               << " but expected " << shardShape[i];
+      }
+    }
+
+    // Verify element types match
+    Type cbElementType = cbUnderlyingType.getElementType();
+    Type shapedElementType = shapedType.getElementType();
+    if (cbElementType != shapedElementType) {
+      return emitOpError(
+          "circular buffer element type must match memref/tensor element type");
+    }
   }
 
   return mlir::success();
@@ -419,7 +585,49 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
 
 ::mlir::LogicalResult RemoteStoreOp::verify() {
   auto shapedType = getShapedType();
-  auto cbType = mlir::cast<CBType>(getCb().getType());
+  bool hasCbOperand = static_cast<bool>(getCb());
+  bool hasLocalBufferOperand = static_cast<bool>(getLocalBuffer());
+  bool hasResultValue = static_cast<bool>(getResult());
+
+  // Verify XOR constraint: exactly one of localBuffer or cb must be present
+  if (hasCbOperand == hasLocalBufferOperand) {
+    if (hasCbOperand) {
+      return emitOpError(
+          "cannot have both circular buffer and local buffer; exactly one must "
+          "be present");
+    }
+    return emitOpError(
+        "must have either circular buffer or local buffer; exactly one must be "
+        "present");
+  }
+
+  // Verify result presence constraints (mirror RemoteLoadOp)
+  // Explicit CB form: CB present, localBuffer absent, result must NOT be
+  // present Implicit form: localBuffer present, CB absent, result MUST be
+  // present
+  if (hasCbOperand && hasResultValue) {
+    return emitOpError(
+        "explicit CB form cannot have a result; result must only be present in "
+        "implicit form");
+  }
+  if (hasLocalBufferOperand && !hasResultValue) {
+    return emitOpError("implicit form (with localBuffer) must have a result");
+  }
+
+  // Verify that tensor parameters are not allowed in explicit CB form
+  if (isExplicitCBForm()) {
+    if (mlir::isa<RankedTensorType>(getMemref().getType())) {
+      return emitOpError(
+          "tensor parameters are not allowed in explicit CB form; memref "
+          "operand must be a memref type");
+    }
+    if (hasLocalBufferOperand &&
+        mlir::isa<RankedTensorType>(getLocalBuffer().getType())) {
+      return emitOpError(
+          "tensor parameters are not allowed in explicit CB form; localBuffer "
+          "operand must be a memref type");
+    }
+  }
 
   // Verify that the memref/tensor is remote (has device layout)
   if (!ttcore::hasDeviceLayout(getMemref())) {
@@ -448,46 +656,114 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
     return emitOpError("mcast shape requires mcast start index");
   }
 
-  // Verify CB type matches shard shape
+  // Verify that memref references a generic op operand when inside a generic
+  if (auto genericOp = getOperation()->getParentOfType<GenericOp>()) {
+    Value memrefOperand = getMemref();
+    bool foundInOperands = false;
+    for (Value operand : genericOp.getOperands()) {
+      if (operand == memrefOperand) {
+        foundInOperands = true;
+        break;
+      }
+    }
+    if (!foundInOperands) {
+      return emitOpError(
+          "memref operand must reference one of the parent generic op's "
+          "operands directly");
+    }
+  }
+
+  // Get device layout for shape verification
   auto deviceLayout = ttcore::getDeviceLayout(getMemref());
   if (!deviceLayout) {
     return emitOpError("failed to get device layout from memref/tensor");
   }
-
   auto shardShape = deviceLayout.getShardShape(shapedType);
-  auto cbUnderlyingType = cbType.getUnderlying();
 
-  // Verify CB underlying shape matches shard shape
-  if (cbUnderlyingType.getRank() != static_cast<int64_t>(shardShape.size())) {
-    return emitOpError("circular buffer underlying rank must match shard shape "
-                       "rank, got ")
-           << cbUnderlyingType.getRank() << " but expected "
-           << shardShape.size();
-  }
+  // CB-specific verification (only when CB is present)
+  if (hasCbOperand) {
+    auto cbType = mlir::cast<CBType>(getCb().getType());
+    auto cbUnderlyingType = cbType.getUnderlying();
 
-  for (size_t i = 0; i < shardShape.size(); ++i) {
-    if (shardShape[i] != mlir::ShapedType::kDynamic &&
-        cbUnderlyingType.getDimSize(i) != mlir::ShapedType::kDynamic &&
-        shardShape[i] != cbUnderlyingType.getDimSize(i)) {
-      return emitOpError("circular buffer underlying shape must match shard "
-                         "shape at dimension ")
-             << i << ", got " << cbUnderlyingType.getDimSize(i)
-             << " but expected " << shardShape[i];
+    // Verify CB underlying shape matches shard shape
+    if (cbUnderlyingType.getRank() != static_cast<int64_t>(shardShape.size())) {
+      return emitOpError(
+                 "circular buffer underlying rank must match shard shape "
+                 "rank, got ")
+             << cbUnderlyingType.getRank() << " but expected "
+             << shardShape.size();
+    }
+
+    for (size_t i = 0; i < shardShape.size(); ++i) {
+      if (shardShape[i] != mlir::ShapedType::kDynamic &&
+          cbUnderlyingType.getDimSize(i) != mlir::ShapedType::kDynamic &&
+          shardShape[i] != cbUnderlyingType.getDimSize(i)) {
+        return emitOpError("circular buffer underlying shape must match shard "
+                           "shape at dimension ")
+               << i << ", got " << cbUnderlyingType.getDimSize(i)
+               << " but expected " << shardShape[i];
+      }
+    }
+
+    // Verify element types match
+    Type cbElementType = cbUnderlyingType.getElementType();
+    Type shapedElementType = shapedType.getElementType();
+    if (cbElementType != shapedElementType) {
+      return emitOpError(
+          "circular buffer element type must match memref/tensor element type");
     }
   }
 
-  // Verify element types match
-  Type cbElementType = cbUnderlyingType.getElementType();
-  Type shapedElementType = shapedType.getElementType();
-  if (cbElementType != shapedElementType) {
-    return emitOpError(
-        "circular buffer element type must match memref/tensor element type");
+  // Local buffer-specific verification (only when localBuffer is present)
+  if (hasLocalBufferOperand) {
+    auto localBufferType = mlir::cast<ShapedType>(getLocalBuffer().getType());
+
+    // Verify local buffer shape matches shard shape
+    if (localBufferType.getRank() != static_cast<int64_t>(shardShape.size())) {
+      return emitOpError("local buffer rank must match shard shape rank, got ")
+             << localBufferType.getRank() << " but expected "
+             << shardShape.size();
+    }
+
+    for (size_t i = 0; i < shardShape.size(); ++i) {
+      if (shardShape[i] != mlir::ShapedType::kDynamic &&
+          localBufferType.getDimSize(i) != mlir::ShapedType::kDynamic &&
+          shardShape[i] != localBufferType.getDimSize(i)) {
+        return emitOpError(
+                   "local buffer shape must match shard shape at dimension ")
+               << i << ", got " << localBufferType.getDimSize(i)
+               << " but expected " << shardShape[i];
+      }
+    }
+
+    // Verify element types match
+    Type localBufferElementType = localBufferType.getElementType();
+    Type shapedElementType = shapedType.getElementType();
+    if (localBufferElementType != shapedElementType) {
+      return emitOpError(
+          "local buffer element type must match memref/tensor element type");
+    }
   }
 
-  // Verify that the result type matches the circular buffer's underlying type
-  if (cbUnderlyingType != getResult().getType()) {
-    return emitOpError() << "result type does not match circular buffer's "
-                            "wrapped memref/tensor type";
+  // Verify result type matches memref type if result is present and in tensor
+  // mode
+  if (hasResultValue) {
+    Type memrefType = getMemref().getType();
+
+    // Only verify result type in tensor mode
+    if (mlir::isa<RankedTensorType>(memrefType)) {
+      Type resultType = getResult().getType();
+      // Result should match the destination memref type
+      if (resultType != memrefType) {
+        return emitOpError("result type must match memref type");
+      }
+    } else {
+      // In memref mode, result should be unused
+      if (!getResult().use_empty()) {
+        return emitOpError(
+            "result must be unused when memref operand has memref type");
+      }
+    }
   }
 
   return mlir::success();
@@ -498,25 +774,21 @@ void RemoteLoadOp::getAsmResultNames(
   // Load operations don't have results anymore (they load into CB)
 }
 
-void RemoteStoreOp::getAsmResultNames(
-    function_ref<void(Value, StringRef)> setNameFn) {
-  // Store operations don't have results
-}
-
 //===----------------------------------------------------------------------===//
 // RemoteLoadOp Bufferization Interface Implementation
 //===----------------------------------------------------------------------===//
 
 bool RemoteLoadOp::bufferizesToMemoryRead(
     mlir::OpOperand &operand, const mlir::bufferization::AnalysisState &) {
+  // Only result-form (no CB) operations should exist during bufferization
   // The memref operand is read from
   return operand.get() == getMemref();
 }
 
 bool RemoteLoadOp::bufferizesToMemoryWrite(
-    mlir::OpOperand &operand, const mlir::bufferization::AnalysisState &) {
-  // The CB operand is written to (loaded into)
-  return operand.get() == getCb();
+    mlir::OpOperand &, const mlir::bufferization::AnalysisState &) {
+  // Only result-form (no CB) operations should exist during bufferization
+  return false;
 }
 
 mlir::bufferization::AliasingValueList
@@ -527,13 +799,13 @@ RemoteLoadOp::getAliasingValues(mlir::OpOperand &,
 }
 
 mlir::FailureOr<mlir::bufferization::BufferLikeType>
-RemoteLoadOp::getBufferType(
-    mlir::Value value, const mlir::bufferization::BufferizationOptions &options,
-    const mlir::bufferization::BufferizationState &,
-    ::llvm::SmallVector<mlir::Value> &) {
-  if (value == getCb()) {
-    auto cbType = mlir::cast<CBType>(value.getType());
-    return cbType.getBufferType(options, [&]() { return emitOpError(); });
+RemoteLoadOp::getBufferType(mlir::Value value,
+                            const mlir::bufferization::BufferizationOptions &,
+                            const mlir::bufferization::BufferizationState &,
+                            ::llvm::SmallVector<mlir::Value> &) {
+  // CB-form operations should not exist during bufferization
+  if (getCb()) {
+    return mlir::failure();
   }
   if (value == getMemref()) {
     return ttcore::getBufferType(value.getType(), /*isView=*/false);
@@ -545,19 +817,19 @@ mlir::LogicalResult RemoteLoadOp::bufferize(
     mlir::RewriterBase &rewriter,
     const mlir::bufferization::BufferizationOptions &options,
     mlir::bufferization::BufferizationState &state) {
-  // Handle the CB operand - similar to PushOp/PopOp using bufferizeCBOp pattern
-  auto cbBufferType =
-      mlir::cast<bufferization::TensorLikeType>(getCbType())
-          .getBufferType(options, [&]() { return emitOpError(); });
-  // NOLINTNEXTLINE
-  if (failed(cbBufferType)) {
-    return mlir::failure();
+  // CB-form operations should not exist during bufferization
+  if (getCb()) {
+    return emitOpError(
+        "RemoteLoadOp with CB should not exist during bufferization");
   }
 
-  auto cbBuffer = rewriter.create<bufferization::ToBufferOp>(
-      getLoc(), *cbBufferType, getCb());
+  // Result-only mode: no CB, just the result
+  Value result = getResult();
+  if (!result) {
+    return emitOpError("Expected result when CB is not present");
+  }
 
-  // Handle the memref/tensor operand - similar to DMAOp
+  // Bufferize the memref/tensor operand
   mlir::FailureOr<Value> memrefBuffer =
       mlir::bufferization::getBuffer(rewriter, getMemref(), options, state);
   // NOLINTNEXTLINE
@@ -565,21 +837,55 @@ mlir::LogicalResult RemoteLoadOp::bufferize(
     return memrefBuffer;
   }
 
-  // Create a new RemoteLoadOp with bufferized operands
-  // NOLINTNEXTLINE
-  mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteLoadOp>(
-      rewriter, *this, cbBuffer.getResult(), *memrefBuffer, getIndices(),
-      getMcastStartIndex(), getMcastShape());
+  // Convert result type to memref type
+  Type resultBufferType =
+      ttcore::getBufferType(result.getType(), /*isView=*/false);
+
+  // RemoteLoadOp always loads into L1 memory, so ensure the result type has
+  // L1 memory space. If the result type is a memref without memory space,
+  // add the L1 memory space attribute.
+  if (auto memrefType = mlir::dyn_cast<MemRefType>(resultBufferType)) {
+    if (!memrefType.getMemorySpace()) {
+      auto l1Attr = ttcore::MemorySpaceAttr::get(getContext(),
+                                                 ttcore::MemorySpace::DeviceL1);
+      resultBufferType =
+          MemRefType::get(memrefType.getShape(), memrefType.getElementType(),
+                          memrefType.getLayout(), l1Attr);
+    }
+  }
+
+  // Create a new RemoteLoadOp with bufferized operands (no CB, with result)
+  // Preserve the multicast form - either high-level (mcastDims) or low-level
+  // (mcastStartIndex/mcastShape)
+  if (isHighLevelMcast()) {
+    // High-level mcast form: use mcastDims builder
+    // NOLINTNEXTLINE
+    mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteLoadOp>(
+        rewriter, *this, resultBufferType, *memrefBuffer, getIndices(),
+        getMcastDims());
+  } else {
+    // Low-level mcast form or no mcast: use mcastStartIndex/mcastShape builder
+    // NOLINTNEXTLINE
+    mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteLoadOp>(
+        rewriter, *this, resultBufferType, *memrefBuffer, getIndices(),
+        getMcastStartIndex(), getMcastShape());
+  }
 
   return mlir::success();
 }
 
 bool RemoteLoadOp::hasTensorSemantics() {
+  // CB-form operations should not exist during bufferization
+  if (getCb()) {
+    return false;
+  }
+
   // Check if the memref operand is a tensor (needs bufferization)
   bool memrefIsTensor = mlir::isa<RankedTensorType>(getMemref().getType());
-  // Check if the CB wraps a tensor (needs bufferization)
-  bool cbHasTensor = getCbType().hasTensorType();
-  return memrefIsTensor || cbHasTensor;
+  // Check if the result is a tensor (needs bufferization)
+  Value result = getResult();
+  bool resultIsTensor = result && mlir::isa<RankedTensorType>(result.getType());
+  return memrefIsTensor || resultIsTensor;
 }
 
 //===----------------------------------------------------------------------===//
@@ -588,8 +894,9 @@ bool RemoteLoadOp::hasTensorSemantics() {
 
 bool RemoteStoreOp::bufferizesToMemoryRead(
     mlir::OpOperand &operand, const mlir::bufferization::AnalysisState &) {
-  // The CB operand is read from
-  return operand.get() == getCb();
+  // Only localBuffer-form (no CB) operations should exist during bufferization
+  // The localBuffer operand is read from
+  return operand.get() == getLocalBuffer();
 }
 
 bool RemoteStoreOp::bufferizesToMemoryWrite(
@@ -606,13 +913,27 @@ RemoteStoreOp::getAliasingValues(mlir::OpOperand &,
 }
 
 mlir::FailureOr<mlir::bufferization::BufferLikeType>
-RemoteStoreOp::getBufferType(
-    mlir::Value value, const mlir::bufferization::BufferizationOptions &options,
-    const mlir::bufferization::BufferizationState &,
-    ::llvm::SmallVector<mlir::Value> &) {
-  if (value == getCb()) {
-    auto cbType = mlir::cast<CBType>(value.getType());
-    return cbType.getBufferType(options, [&]() { return emitOpError(); });
+RemoteStoreOp::getBufferType(mlir::Value value,
+                             const mlir::bufferization::BufferizationOptions &,
+                             const mlir::bufferization::BufferizationState &,
+                             ::llvm::SmallVector<mlir::Value> &) {
+  // CB-form operations should not exist during bufferization
+  if (getCb()) {
+    return mlir::failure();
+  }
+
+  Value localBuffer = getLocalBuffer();
+  if (!localBuffer) {
+    return mlir::failure();
+  }
+
+  Value result = getResult();
+  if (result && value == result) {
+    return ttcore::getBufferType(value.getType(), /*isView=*/false);
+  }
+
+  if (value == localBuffer) {
+    return ttcore::getBufferType(value.getType(), /*isView=*/false);
   }
   if (value == getMemref()) {
     return ttcore::getBufferType(value.getType(), /*isView=*/false);
@@ -624,7 +945,19 @@ mlir::LogicalResult RemoteStoreOp::bufferize(
     mlir::RewriterBase &rewriter,
     const mlir::bufferization::BufferizationOptions &options,
     mlir::bufferization::BufferizationState &state) {
-  // Handle the memref/tensor operand - similar to DMAOp
+  // CB-form operations should not exist during bufferization
+  if (getCb()) {
+    return emitOpError(
+        "RemoteStoreOp with CB should not exist during bufferization");
+  }
+
+  // Implicit form: localBuffer mode
+  Value localBuffer = getLocalBuffer();
+  if (!localBuffer) {
+    return emitOpError("Expected localBuffer when CB is not present");
+  }
+
+  // Bufferize the memref/tensor operand
   mlir::FailureOr<Value> memrefBuffer =
       mlir::bufferization::getBuffer(rewriter, getMemref(), options, state);
   // NOLINTNEXTLINE
@@ -632,33 +965,54 @@ mlir::LogicalResult RemoteStoreOp::bufferize(
     return memrefBuffer;
   }
 
-  // Handle the CB operand - similar to PushOp/PopOp using bufferizeCBOp pattern
-  auto cbBufferType =
-      mlir::cast<bufferization::TensorLikeType>(getCbType())
-          .getBufferType(options, [&]() { return emitOpError(); });
-  // NOLINTNEXTLINE
-  if (failed(cbBufferType)) {
-    return mlir::failure();
+  // Bufferize the localBuffer operand (only if it's a tensor)
+  Value localBufferBufferized = localBuffer;
+  if (mlir::isa<RankedTensorType>(localBuffer.getType())) {
+    mlir::FailureOr<Value> localBufferMaybe =
+        mlir::bufferization::getBuffer(rewriter, localBuffer, options, state);
+    // NOLINTNEXTLINE
+    if (failed(localBufferMaybe)) {
+      return localBufferMaybe;
+    }
+    localBufferBufferized = *localBufferMaybe;
   }
 
-  auto cbBuffer = rewriter.create<bufferization::ToBufferOp>(
-      getLoc(), *cbBufferType, getCb());
+  // Convert result type to memref type
+  // In implicit form (localBuffer present), result is always required
+  Value result = getResult();
+  if (!result) {
+    return emitOpError("Expected result in implicit form during bufferization");
+  }
 
-  // Create a new RemoteStoreOp with bufferized operands
+  Type resultBufferType =
+      ttcore::getBufferType(result.getType(), /*isView=*/false);
+
+  // Create a new RemoteStoreOp with bufferized operands and result
   // NOLINTNEXTLINE
   mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteStoreOp>(
-      rewriter, *this, *memrefBuffer, getIndices(), cbBuffer.getResult(),
-      getMcastStartIndex(), getMcastShape());
+      rewriter, *this, resultBufferType, *memrefBuffer, getIndices(),
+      localBufferBufferized, /*cb=*/Value{}, getMcastStartIndex(),
+      getMcastShape());
 
   return mlir::success();
 }
 
 bool RemoteStoreOp::hasTensorSemantics() {
+  // CB-form operations should not exist during bufferization
+  if (getCb()) {
+    return false;
+  }
+
   // Check if the memref operand is a tensor (needs bufferization)
   bool memrefIsTensor = mlir::isa<RankedTensorType>(getMemref().getType());
-  // Check if the CB wraps a tensor (needs bufferization)
-  bool cbHasTensor = getCbType().hasTensorType();
-  return memrefIsTensor || cbHasTensor;
+  // Check if the localBuffer is a tensor (needs bufferization)
+  Value localBuffer = getLocalBuffer();
+  bool localBufferIsTensor =
+      localBuffer && mlir::isa<RankedTensorType>(localBuffer.getType());
+  // Check if the result is a tensor (needs bufferization)
+  Value result = getResult();
+  bool resultIsTensor = result && mlir::isa<RankedTensorType>(result.getType());
+  return memrefIsTensor || localBufferIsTensor || resultIsTensor;
 }
 
 //===----------------------------------------------------------------------===//
@@ -753,8 +1107,8 @@ mlir::LogicalResult TileTilizeBlockOp::bufferize(
   }
 
   mlir::Operation *old = getOperation();
-  auto newOp =
-      rewriter.create<mlir::tt::d2m::TileTilizeBlockOp>(old->getLoc(), in, out);
+  auto newOp = rewriter.create<mlir::tt::d2m::TileTilizeBlockOp>(
+      old->getLoc(), out.getType(), in, out);
   rewriter.replaceOp(old, newOp->getResults());
   return mlir::success();
 }
@@ -777,7 +1131,7 @@ mlir::bufferization::AliasingValueList TileTilizeBlockOp::getAliasingValues(
 
 mlir::FailureOr<mlir::bufferization::BufferLikeType>
 TileTilizeBlockOp::getBufferType(
-    mlir::Value, const mlir::bufferization::BufferizationOptions &,
+    mlir::Value value, const mlir::bufferization::BufferizationOptions &,
     const mlir::bufferization::BufferizationState &,
     ::llvm::SmallVector<mlir::Value> &) {
   assert(false && "should already have bufferized types via parent generic op "
@@ -795,7 +1149,12 @@ mlir::LogicalResult TileTilizeBlockOp::verify() {
   if (!llvm::isa<mlir::tt::ttcore::TileType>(
           getElemType(getOutput().getType()))) {
     return emitOpError(
-        "result of TileTilizeBlock must have ttcore.tile element type");
+        "output of TileTilizeBlock must have ttcore.tile element type");
+  }
+
+  // Verify result type matches output type (DPS style)
+  if (getResult().getType() != getOutput().getType()) {
+    return emitOpError("result type must match output parameter type");
   }
 
   return success();
@@ -837,7 +1196,7 @@ mlir::LogicalResult TileUntilizeBlockOp::bufferize(
 
   mlir::Operation *old = getOperation();
   auto newOp = rewriter.create<mlir::tt::d2m::TileUntilizeBlockOp>(
-      old->getLoc(), in, out);
+      old->getLoc(), out.getType(), in, out);
   rewriter.replaceOp(old, newOp->getResults());
   return mlir::success();
 }
@@ -877,8 +1236,14 @@ mlir::LogicalResult TileUntilizeBlockOp::verify() {
   if (llvm::isa<mlir::tt::ttcore::TileType>(
           getElemType(getOutput().getType()))) {
     return emitOpError(
-        "result of TileUntilizeBlock must not have ttcore.tile element type");
+        "output of TileUntilizeBlock must not have ttcore.tile element type");
   }
+
+  // Verify result type matches output type (DPS style)
+  if (getResult().getType() != getOutput().getType()) {
+    return emitOpError("result type must match output parameter type");
+  }
+
   return success();
 }
 
@@ -923,7 +1288,7 @@ BlockMaskOp::bufferize(mlir::RewriterBase &rewriter,
 
   mlir::Operation *old = getOperation();
   auto newOp = rewriter.create<mlir::tt::d2m::BlockMaskOp>(
-      old->getLoc(), in, out, getLogicalRows(), getLogicalCols(),
+      old->getLoc(), out.getType(), in, out, getLogicalRows(), getLogicalCols(),
       getFillValue());
   rewriter.replaceOp(old, newOp->getResults());
   return mlir::success();

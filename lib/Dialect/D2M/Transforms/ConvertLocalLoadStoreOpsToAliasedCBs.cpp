@@ -1,0 +1,288 @@
+// SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#include "ttmlir/Dialect/D2M/Transforms/Passes.h"
+
+#include "ttmlir/Dialect/D2M/IR/D2MGenericRegionOps.h"
+#include "ttmlir/Dialect/D2M/IR/D2MOps.h"
+#include "ttmlir/Utils.h"
+
+#include "mlir/IR/PatternMatch.h"
+
+namespace mlir::tt::d2m {
+#define GEN_PASS_DEF_D2MCONVERTLOCALLOADSTOREOPSTOALIASEDCBS
+#include "ttmlir/Dialect/D2M/Transforms/Passes.h.inc"
+
+namespace {
+
+// Helper function to check if an operand is local (i.e., NOT a stream op
+// and NOT in a DMA-only generic op)
+static bool isLocalOperand(Value operand, Operation *op) {
+  // Check if operand comes from stream_layout op
+  if (mlir::isa_and_nonnull<StreamLayoutOp>(operand.getDefiningOp())) {
+    return false;
+  }
+
+  // Check if the operation is inside a DMA-only generic op
+  GenericOp generic = op->getParentOfType<GenericOp>();
+  if (generic && generic.isDMAOnlyForm()) {
+    return false;
+  }
+
+  return true;
+}
+
+// Helper function to find the CB block argument that corresponds to a memref
+// operand in a generic op. Returns the CB block argument if found, null
+// otherwise.
+// Assumes that the operand index in the generic op equals the CB block arg
+// index.
+static Value findAssociatedCB(Operation *op, Value memrefOperand) {
+  GenericOp generic = op->getParentOfType<GenericOp>();
+  if (!generic) {
+    return Value();
+  }
+
+  // Find which operand index this memref corresponds to
+  unsigned operandIndex = UINT_MAX;
+  for (unsigned i = 0; i < generic->getNumOperands(); ++i) {
+    if (generic->getOperand(i) == memrefOperand) {
+      operandIndex = i;
+      break;
+    }
+  }
+
+  if (operandIndex == UINT_MAX) {
+    return Value();
+  }
+
+  // Find the generic op's thread region that contains this operation
+  // If there's only one region, use it directly. Otherwise, use the utility
+  // function
+  Region *genericRegion = nullptr;
+  if (generic.getNumRegions() == 1) {
+    genericRegion = &generic.getRegion(0);
+  } else {
+    genericRegion = ttmlir::utils::getRegionWithParentOfType<GenericOp>(op);
+  }
+
+  if (!genericRegion || genericRegion->empty()) {
+    return Value();
+  }
+
+  // Get the first block of the generic region (thread region block)
+  Block *threadBlock = &genericRegion->front();
+
+  // The CB block arguments are in the same order as the generic operands
+  // The operand index equals the CB block arg index (confirmed by user)
+  if (threadBlock->getNumArguments() > operandIndex) {
+    return threadBlock->getArgument(operandIndex);
+  }
+
+  return Value();
+}
+
+// Helper function to recursively walk a block and find the last operation that
+// uses a value, including uses in nested regions. Returns the operation after
+// which to insert the pop, or null if no uses found.
+static Operation *findLastUse(Value value, Block *block) {
+  Operation *lastUse = nullptr;
+
+  // Recursive helper to walk a block and all nested regions
+  std::function<void(Block *)> walkBlock = [&](Block *b) {
+    for (Operation &op : *b) {
+      // Check if this operation uses the value
+      for (OpOperand &operand : op.getOpOperands()) {
+        if (operand.get() == value) {
+          lastUse = &op;
+          // Continue searching to find the actual last use
+        }
+      }
+
+      // Recursively check nested regions
+      for (Region &region : op.getRegions()) {
+        for (Block &regionBlock : region) {
+          walkBlock(&regionBlock);
+        }
+      }
+    }
+  };
+
+  walkBlock(block);
+
+  return lastUse;
+}
+
+// Helper function to find the acquire_buffer operation that produces a given
+// value, potentially through a chain of operations. Returns the acquire_buffer
+// op if found, null otherwise.
+static AcquireBufferOp findAcquireBuffer(Value value) {
+  if (!value) {
+    return nullptr;
+  }
+
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp) {
+    return nullptr;
+  }
+
+  // Direct case: value is directly produced by acquire_buffer
+  if (auto acquireBufferOp = mlir::dyn_cast<AcquireBufferOp>(definingOp)) {
+    return acquireBufferOp;
+  }
+
+  // Trace through operations that might pass the buffer through
+  // (e.g., view-like ops, cast ops, etc.)
+  for (Value operand : definingOp->getOperands()) {
+    if (auto acquireBufferOp = findAcquireBuffer(operand)) {
+      return acquireBufferOp;
+    }
+  }
+
+  return nullptr;
+}
+
+class D2MConvertLocalLoadStoreOpsToAliasedCBs
+    : public impl::D2MConvertLocalLoadStoreOpsToAliasedCBsBase<
+          D2MConvertLocalLoadStoreOpsToAliasedCBs> {
+public:
+  using impl::D2MConvertLocalLoadStoreOpsToAliasedCBsBase<
+      D2MConvertLocalLoadStoreOpsToAliasedCBs>::
+      D2MConvertLocalLoadStoreOpsToAliasedCBsBase;
+
+  void runOnOperation() final {
+    ModuleOp moduleOp = getOperation();
+    IRRewriter rewriter(&getContext());
+
+    // Collect remote_load operations to convert
+    SmallVector<RemoteLoadOp> remoteLoadsToConvert;
+    moduleOp->walk([&](RemoteLoadOp remoteLoad) {
+      Value memref = remoteLoad.getMemref();
+      if (isLocalOperand(memref, remoteLoad.getOperation())) {
+        // Skip if multicast is present (shouldn't happen for local operands,
+        // but verify)
+        if (remoteLoad.isMcast()) {
+          remoteLoad.emitWarning(
+              "remote_load with local operand has multicast parameters, "
+              "skipping conversion");
+          return;
+        }
+        remoteLoadsToConvert.push_back(remoteLoad);
+      }
+    });
+
+    // Convert remote_load operations
+    for (RemoteLoadOp remoteLoad : remoteLoadsToConvert) {
+      Location loc = remoteLoad.getLoc();
+      Value memref = remoteLoad.getMemref();
+      Value assocCb = findAssociatedCB(remoteLoad.getOperation(), memref);
+
+      if (!assocCb) {
+        remoteLoad.emitWarning(
+            "could not find associated CB block argument, skipping conversion");
+        continue;
+      }
+
+      rewriter.setInsertionPoint(remoteLoad);
+
+      // Create reserve, push, and wait operations
+      rewriter.create<ReserveOp>(loc, assocCb);
+      rewriter.create<PushOp>(loc, assocCb);
+      auto waitOp = rewriter.create<WaitOp>(loc, assocCb);
+
+      // Get the result value (either from wait or from remote_load)
+      Value result;
+      if (remoteLoad.getResult()) {
+        result = waitOp.getResult();
+        // Replace all uses of remote_load result with wait result
+        rewriter.replaceAllUsesWith(remoteLoad.getResult(), result);
+      } else {
+        result = waitOp.getResult();
+      }
+
+      // Find last use and insert pop
+      Block *block = remoteLoad->getBlock();
+      Operation *lastUse = findLastUse(result, block);
+
+      if (lastUse) {
+        rewriter.setInsertionPointAfter(lastUse);
+      } else {
+        // No uses found, insert pop immediately after wait
+        rewriter.setInsertionPointAfter(waitOp);
+      }
+      rewriter.create<PopOp>(loc, assocCb);
+
+      // Erase the original remote_load operation
+      rewriter.eraseOp(remoteLoad);
+    }
+
+    // Collect remote_store operations to convert
+    SmallVector<RemoteStoreOp> remoteStoresToConvert;
+    moduleOp->walk([&](RemoteStoreOp remoteStore) {
+      Value memref = remoteStore.getMemref();
+      if (isLocalOperand(memref, remoteStore.getOperation())) {
+        // Skip if multicast is present (shouldn't happen for local operands,
+        // but verify)
+        if (remoteStore.isMcast()) {
+          remoteStore.emitWarning(
+              "remote_store with local operand has multicast parameters, "
+              "skipping conversion");
+          return;
+        }
+        remoteStoresToConvert.push_back(remoteStore);
+      }
+    });
+
+    // Convert remote_store operations
+    for (RemoteStoreOp remoteStore : remoteStoresToConvert) {
+      Location loc = remoteStore.getLoc();
+      Value memref = remoteStore.getMemref();
+      Value assocCb = findAssociatedCB(remoteStore.getOperation(), memref);
+
+      if (!assocCb) {
+        remoteStore.emitWarning(
+            "could not find associated CB block argument, skipping conversion");
+        continue;
+      }
+
+      // Get the local buffer being stored (either explicit or from CB form)
+      Value localBuffer = remoteStore.getLocalBuffer();
+      if (!localBuffer) {
+        remoteStore.emitWarning(
+            "remote_store does not have a local buffer operand, skipping "
+            "conversion");
+        continue;
+      }
+
+      // Find the acquire_buffer that produces the local buffer being stored
+      AcquireBufferOp acquireBufferOp = findAcquireBuffer(localBuffer);
+
+      if (!acquireBufferOp) {
+        remoteStore.emitWarning(
+            "could not find acquire_buffer for local buffer operand, skipping "
+            "conversion");
+        continue;
+      }
+
+      // Replace acquire_buffer with reserve
+      rewriter.setInsertionPoint(acquireBufferOp);
+      auto reserveOp = rewriter.create<ReserveOp>(loc, assocCb);
+      rewriter.replaceAllUsesWith(acquireBufferOp.getResult(),
+                                  reserveOp.getResult());
+      rewriter.eraseOp(acquireBufferOp);
+
+      // At remote_store location, insert: push, wait, pop
+      rewriter.setInsertionPoint(remoteStore);
+      rewriter.create<PushOp>(loc, assocCb);
+      rewriter.create<WaitOp>(loc, assocCb);
+      rewriter.create<PopOp>(loc, assocCb);
+
+      // Erase the original remote_store operation
+      rewriter.eraseOp(remoteStore);
+    }
+  }
+};
+} // namespace
+
+} // namespace mlir::tt::d2m

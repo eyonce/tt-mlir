@@ -1134,6 +1134,73 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
         });
       }
 
+      // Post stream insertion and reblocking, remote_load
+      // and remote_store ops must be updated to reference
+      // updated operands and CB result types. First build
+      // mappings from old to new operand values and CB
+      // result types.
+      llvm::DenseMap<Value, Value> operandReplaceMap;
+      llvm::DenseMap<Value, Type> operandCBTypeMap;
+
+      for (const OperandContext &operandCtx : genericCtx.operands) {
+        const auto operandIndex = operandCtx.operand->getOperandNumber();
+
+        // Get the CB argument type for this operand
+        TT_assert(!genericOp->getRegions().empty());
+        Region &region = genericOp->getRegions().front();
+        TT_assert(region.hasOneBlock());
+        Block &block = region.getBlocks().front();
+        Type cbArgType = block.getArgument(operandIndex).getType();
+        auto cbType = mlir::dyn_cast<d2m::CBType>(cbArgType);
+        TT_assert(cbType != nullptr);
+        Type cbUnderlyingType = cbType.getUnderlying();
+
+        // Check if a stream was inserted for this operand during this pass
+        if (!operandCtx.hasStream &&
+            (useAlwaysStreamPolicy() ||
+             inferStreamRequirement(genericOp, operandCtx.operandIndex()))) {
+          if (!(operandCtx.isOutput && !allowL1OutputSpilling)) {
+            operandReplaceMap[operandCtx.root] = operandCtx.operand->get();
+            operandCBTypeMap[operandCtx.root] = cbUnderlyingType;
+          }
+        } else if (operandCtx.hasStream) {
+          // Stream already existed, but may have been
+          // reblocked necessitating an update to the load/store result type
+          operandCBTypeMap[operandCtx.operand->get()] = cbUnderlyingType;
+        }
+      }
+
+      // Rewrite remote load/store ops result types and remote memrefs
+      for (Region &region : genericOp->getRegions()) {
+        TT_assert(region.hasOneBlock());
+        Block &block = region.getBlocks().front();
+
+        block.walk([&](Operation *blockOp) {
+          llvm::TypeSwitch<Operation *, void>(blockOp)
+              .Case([&](d2m::RemoteLoadOp op) {
+                Value oldMemref = op.getMemref();
+                Value newMemref = oldMemref;
+
+                auto replaceIt = operandReplaceMap.find(oldMemref);
+                if (replaceIt != operandReplaceMap.end()) {
+                  newMemref = replaceIt->second;
+                  op.setMemRef(newMemref);
+                }
+
+                auto typeIt = operandCBTypeMap.find(oldMemref);
+                if (typeIt != operandCBTypeMap.end()) {
+                  op.getResult().setType(typeIt->second);
+                }
+              })
+              .Case([&](d2m::RemoteStoreOp op) {
+                auto it = operandReplaceMap.find(op.getMemref());
+                if (it != operandReplaceMap.end()) {
+                  op.setMemRef(it->second);
+                }
+              });
+        });
+      }
+
       // Fix up block factors:
 
       const auto blockFactorsAttrName =
