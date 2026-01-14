@@ -91,9 +91,8 @@ public:
         mcastShape.push_back(gridDimMinusOne);
       } else {
         // Parallel dimension: mcast to self only
-        Value coreIdx = rewriter.create<CoreIndexOp>(
-            loc, rewriter.getIndexType(),
-            rewriter.getI64IntegerAttr(static_cast<int64_t>(dim)));
+        Value coreIdx =
+            rewriter.create<CoreIndexOp>(loc, static_cast<int64_t>(dim));
         mcastStartIndex.push_back(coreIdx);
         mcastShape.push_back(one);
       }
