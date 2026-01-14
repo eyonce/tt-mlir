@@ -1,6 +1,5 @@
 // UNSUPPORTED: true
-// RUN: ttmlir-opt --ttcore-register-device --d2m-insert-load-store-ops --canonicalize -o %t %s
-// RUN: FileCheck %s --input-file=%t
+// This test is disabled as the d2m-insert-load-store-ops pass has been removed.
 
 #l1_ = #ttcore.memory_space<l1>
 #dram = #ttcore.memory_space<dram>
@@ -156,7 +155,8 @@ module {
   }
 
   // Test matmul with loop interchange
-  // RUN: ttmlir-opt --ttcore-register-device --d2m-generic-apply-interchange="matmul-interchange=2,0,1" --d2m-insert-load-store-ops --loop-invariant-code-motion %s 2>&1 | FileCheck %s --check-prefix=CHECK-INTERCHANGE
+  // This test is disabled as the d2m-insert-load-store-ops pass has been removed.
+  // RUN: ttmlir-opt --ttcore-register-device --d2m-generic-apply-interchange="matmul-interchange=2,0,1" --loop-invariant-code-motion %s 2>&1 | FileCheck %s --check-prefix=CHECK-INTERCHANGE
 
   // CHECK-INTERCHANGE-LABEL: func.func @test_matmul_interchange
   func.func @test_matmul_interchange(%arg0: memref<1x1x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>,

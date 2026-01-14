@@ -865,13 +865,6 @@ def D2MDecomposeComplexPermute: Pass<"d2m-decompose-complex-permute", "::mlir::M
   }];
 }
 
-def D2MInsertLoadStoreOps : Pass<"d2m-insert-load-store-ops", "::mlir::ModuleOp"> {
-  let summary = "Insert load and store ops corresponding to compute CB operations.";
-  let description = [{
-  }];
-  let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
-}
-
 def D2MGenerateOuterLoops : Pass<"d2m-generate-outer-loops", "::mlir::ModuleOp"> {
   let summary = "Generate outer loops.";
   let description = [{
