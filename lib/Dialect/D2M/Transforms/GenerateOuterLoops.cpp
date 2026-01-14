@@ -98,8 +98,7 @@ public:
         for (unsigned gridIndex = 0; gridIndex < numPhysicalGridDims;
              gridIndex++) {
           physicalCoreIndices[gridIndex] = rewriter.create<CoreIndexOp>(
-              loc, rewriter.getIndexType(),
-              rewriter.getI64IntegerAttr(gridIndex));
+              loc, static_cast<int64_t>(gridIndex));
         }
         if (!coreVirtualizationMap.isEmpty()) {
           virtualGridIndices = ttmlir::utils::fullyApplyAffineMap(

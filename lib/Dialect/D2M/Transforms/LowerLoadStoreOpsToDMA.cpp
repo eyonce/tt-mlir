@@ -476,8 +476,8 @@ public:
     Value isSender = nullptr;
     for (size_t i = 0; i < isMcastDim.size(); ++i) {
       if (isMcastDim[i]) {
-        Value coreIdx = rewriter.create<CoreIndexOp>(
-            loc, rewriter.getIndexType(), rewriter.getI64IntegerAttr(i));
+        Value coreIdx =
+            rewriter.create<CoreIndexOp>(loc, static_cast<int64_t>(i));
         Value condition = rewriter.create<arith::CmpIOp>(
             loc, rewriter.getI1Type(), arith::CmpIPredicate::eq, coreIdx, zero);
         if (isSender) {
@@ -554,8 +554,8 @@ public:
               senderCoreIndex.push_back(zeroIdx);
             } else {
               // Non-multicast dimension - use current core's position
-              Value currentCoreIdx = builder.create<CoreIndexOp>(
-                  loc, builder.getIndexType(), builder.getI64IntegerAttr(i));
+              Value currentCoreIdx =
+                  builder.create<CoreIndexOp>(loc, static_cast<int64_t>(i));
               senderCoreIndex.push_back(currentCoreIdx);
             }
           }
