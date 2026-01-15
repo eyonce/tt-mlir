@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ttmlir/AffineMapUtils.h"
 #include "ttmlir/Dialect/D2M/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -60,19 +59,19 @@ public:
             generic.getIndexingMaps()[outputOperandsIndex])
             .getValue();
 
-    // Extract core virtualization map with just grid yx results
-    AffineMap coreVirtualizationMap = generic.getGrid().getMapping();
-    if (!coreVirtualizationMap.isEmpty()) {
-      coreVirtualizationMap = generic.getGrid().getMapping().dropResult(0);
-    }
+    // Get the grid mapping for use with CoreIndexOp. The mapping includes
+    // a leading device index result, so we use the full mapping and let
+    // CoreIndexOp handle dimension selection via (dim + 1).
+    AffineMap gridMapping = generic.getGrid().getMapping();
 
     SmallVector<int64_t> blockFactors = generic.getBlockFactorsValue();
 
-    // The number of grid dimensions (typically 2 for a 2D grid)
+    // The number of grid dimensions (typically 2 for a 2D grid, but could be
+    // more with virtualization)
     constexpr unsigned numPhysicalGridDims = 2;
-    unsigned numGridDims = coreVirtualizationMap.isEmpty()
+    unsigned numGridDims = gridMapping.isEmpty()
                                ? numPhysicalGridDims
-                               : coreVirtualizationMap.getNumResults();
+                               : gridMapping.getNumResults() - 1;
 
     // Create CoreIndexOp operations lazily - create them the first time we need
     // them, at the start of the outermost loop body, then reuse them.
@@ -90,21 +89,15 @@ public:
       rewriter.setInsertionPoint(index);
 
       // Create CoreIndexOp operations lazily at the start of the outermost loop
-      // body if we haven't created them yet
+      // body if we haven't created them yet. Use CoreIndexOp with the grid
+      // mapping directly - the lowering will handle applying the affine map.
       if (!virtualGridIndicesCreated && !loopNest.loops.empty()) {
         // Set insertion point to the start of the outermost loop body
         rewriter.setInsertionPointToStart(loopNest.loops.front().getBody());
-        SmallVector<Value> physicalCoreIndices(numPhysicalGridDims);
-        for (unsigned gridIndex = 0; gridIndex < numPhysicalGridDims;
-             gridIndex++) {
-          physicalCoreIndices[gridIndex] = rewriter.create<CoreIndexOp>(
-              loc, static_cast<int64_t>(gridIndex));
-        }
-        if (!coreVirtualizationMap.isEmpty()) {
-          virtualGridIndices = ttmlir::utils::fullyApplyAffineMap(
-              rewriter, loc, coreVirtualizationMap, physicalCoreIndices);
-        } else {
-          virtualGridIndices = physicalCoreIndices;
+        virtualGridIndices.resize(numGridDims);
+        for (unsigned gridDim = 0; gridDim < numGridDims; gridDim++) {
+          virtualGridIndices[gridDim] = rewriter.create<CoreIndexOp>(
+              loc, static_cast<int64_t>(gridDim), gridMapping);
         }
         virtualGridIndicesCreated = true;
         // Reset insertion point back to before the IterIndexOp
@@ -235,7 +228,6 @@ public:
   void runOnOperation() final {
     RewritePatternSet patterns(&getContext());
     patterns.add<D2MGenerateOuterLoopsRewriter>(&getContext());
-    populateAffineToStdConversionPatterns(patterns);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
     }
