@@ -1060,6 +1060,10 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
         continue;
       }
 
+      // Map from operand index to pre-stream-insertion operand value.
+      // Used to update remote_load/store ops after stream insertion.
+      llvm::DenseMap<int32_t, Value> preStreamOperandValues;
+
       for (const OperandContext &operandCtx : genericCtx.operands) {
         const auto *memrefIt = analysis.memrefs.find(operandCtx.root);
         TT_debug(memrefIt != analysis.memrefs.end());
@@ -1092,6 +1096,11 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
         if (!operandCtx.hasStream &&
             (useAlwaysStreamPolicy() ||
              inferStreamRequirement(genericOp, operandCtx.operandIndex()))) {
+
+          // Save the old operand value before stream insertion so we can map
+          // from it to the new stream value for updating remote_load/store ops.
+          preStreamOperandValues[operandCtx.operandIndex()] =
+              operandCtx.operand->get();
 
           // The above IR modifications may have changed memspace attributes
           // of ops in the operand's def chain; inserting a matching
@@ -1160,8 +1169,14 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
             (useAlwaysStreamPolicy() ||
              inferStreamRequirement(genericOp, operandCtx.operandIndex()))) {
           if (!(operandCtx.isOutput && !allowL1OutputSpilling)) {
-            operandReplaceMap[operandCtx.root] = operandCtx.operand->get();
-            operandCBTypeMap[operandCtx.root] = cbUnderlyingType;
+            // Use the pre-stream operand value as the key, since that's what
+            // remote_load/store ops reference.
+            auto preStreamIt =
+                preStreamOperandValues.find(operandCtx.operandIndex());
+            TT_assert(preStreamIt != preStreamOperandValues.end());
+            Value oldOperandValue = preStreamIt->second;
+            operandReplaceMap[oldOperandValue] = operandCtx.operand->get();
+            operandCBTypeMap[oldOperandValue] = cbUnderlyingType;
           }
         } else if (operandCtx.hasStream) {
           // Stream already existed, but may have been
