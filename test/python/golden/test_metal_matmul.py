@@ -150,7 +150,6 @@ def test_matmul_ttnn_shapes_single_buffered(
         device=device,
         custom_pipeline=f"ttir-to-ttmetal-pipeline{{{' '.join(options)}}}",
         test_base=request.node.name,
-        module_dump=True,
         print_ir=False,
         output_root=request.config.getoption("--path"),
         system_desc_path=request.config.getoption("--sys-desc"),
@@ -198,7 +197,6 @@ def test_matmul_ttnn_shapes_double_buffered(
         device=device,
         custom_pipeline=f"ttir-to-ttmetal-pipeline{{{' '.join(options)}}}",
         test_base=request.node.name,
-        module_dump=True,
         print_ir=False,
         output_root=request.config.getoption("--path"),
         system_desc_path=request.config.getoption("--sys-desc"),
@@ -254,11 +252,7 @@ def test_matmul_1d_shapes(
         custom_pipeline=f"ttir-to-ttmetal-pipeline{{{' '.join(options)}}}",
         test_base=request.node.name,
         save_artifacts=True,
-        print_ir=True,
-=======
-        module_dump=True,
         print_ir=False,
->>>>>>> 6b76c8c09 (load store ops replace CB ops for the entire frontend)
         output_root=request.config.getoption("--path"),
         system_desc_path=request.config.getoption("--sys-desc"),
         skip_exec=getattr(request.node, "skip_exec", False),
