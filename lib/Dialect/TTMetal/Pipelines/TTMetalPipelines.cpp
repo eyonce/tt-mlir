@@ -264,6 +264,8 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   { opSchedulerOptions.enableOpScheduler = true; }
   pm.addPass(d2m::createD2MOpScheduler(opSchedulerOptions));
 
+  pm.addPass(d2m::createD2MGenerateOuterLoops());
+
   d2m::D2MInsertDstRegisterAccessOptions insertDstRegisterAccessOptions;
   {
     insertDstRegisterAccessOptions.useTileMatmul = options.useTileMatmul;
@@ -288,7 +290,6 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   // remote loads and stores to explicit CB form split the
   // unified thread into separate compute and datamovement
   // threads.
-  pm.addPass(d2m::createD2MGenerateOuterLoops());
   pm.addPass(d2m::createD2MLowerMulticastLoads());
   pm.addPass(d2m::createD2MConvertLocalLoadStoreOpsToAliasedCBs());
   pm.addPass(d2m::createD2MDecoupleLoadStoreOpsFromCompute());
