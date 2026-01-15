@@ -209,7 +209,7 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
         options.maxDstPhysicalSizeTiles;
   }
   pm.addPass(d2m::createD2MElementwiseFusion(elementwiseFusionOptions));
-  // pm.addPass(createLinalgElementwiseOpFusionPass());
+  pm.addPass(createLinalgElementwiseOpFusionPass());
   pm.addPass(mlir::createCanonicalizerPass());
   if (options.ttnnMode) {
     bufferization::OneShotBufferizePassOptions bufferizePassOptions;
@@ -264,8 +264,6 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   { opSchedulerOptions.enableOpScheduler = true; }
   pm.addPass(d2m::createD2MOpScheduler(opSchedulerOptions));
 
-  pm.addPass(d2m::createD2MGenerateOuterLoops());
-
   d2m::D2MInsertDstRegisterAccessOptions insertDstRegisterAccessOptions;
   {
     insertDstRegisterAccessOptions.useTileMatmul = options.useTileMatmul;
@@ -274,6 +272,8 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   }
   pm.addPass(
       d2m::createD2MInsertDstRegisterAccess(insertDstRegisterAccessOptions));
+
+  pm.addPass(d2m::createD2MGenerateOuterLoops());
 
   pm.addPass(d2m::createD2MSFPUTileLoopFission());
   pm.addPass(mlir::createCanonicalizerPass());
