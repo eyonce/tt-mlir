@@ -125,8 +125,14 @@ SmallVector<Value> buildGridIndices(OpBuilder &builder, Location loc,
       // Constant expression - create constant index
       indices.push_back(
           builder.create<arith::ConstantIndexOp>(loc, constExpr.getValue()));
+    } else {
+      TT_assertv(false,
+                 "Could not build grid indices for indexing map '{0}'; only "
+                 "dimension or constant expressions are supported.",
+                 indexingMap);
     }
   }
+  TT_assert(indices.size() == indexingMap.getNumResults());
   return indices;
 }
 
