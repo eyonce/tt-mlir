@@ -467,8 +467,10 @@ public:
     BlockArgument receiversReadySemaphore = preallocatedSems.first;
     BlockArgument senderFinishedSemaphore = preallocatedSems.second;
 
-    Value mcastVolumeVal = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getIndexType(), rewriter.getIndexAttr(mcastVolume));
+    // Number of receivers is mcastVolume - 1 (excluding sender itself).
+    // The sender waits for this many semaphore increments before multicasting.
+    Value numReceiversVal = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getIndexType(), rewriter.getIndexAttr(mcastVolume - 1));
 
     // Determine if this core is the sender.
     // By convention, core 0 along each multicast dimension is the sender.
@@ -504,9 +506,10 @@ public:
               remoteMemoryMap, localMemoryMap, coalescingFactor, shardVolume);
           builder.create<DMAWaitOp>(loc, dmaTx);
 
-          // Wait for all receivers to be ready
+          // Wait for all receivers to be ready (mcastVolume - 1, excluding
+          // sender)
           builder.create<SemaphoreWaitOp>(loc, receiversReadySemaphore,
-                                          mcastVolumeVal, zero);
+                                          numReceiversVal, zero);
 
           // Build full indices for the local memref
           // Use the localMemref from ReserveOp (Producer) for the multicast.

@@ -68,11 +68,14 @@ public:
     // Build low-level multicast arguments.
     // For each grid dimension:
     // - If dim is in mcastDims (multicast dimension):
-    //   - mcastStartIndex[dim] = 1 (sender at core 0, multicast starts at 1)
-    //   - mcastShape[dim] = gridShape[dim] - 1
+    //   - mcastStartIndex[dim] = 0 (self-inclusive multicast starting at
+    //   sender)
+    //   - mcastShape[dim] = gridShape[dim] (total cores including sender)
     // - If dim is NOT in mcastDims (parallel dimension):
     //   - mcastStartIndex[dim] = core_index(dim)
     //   - mcastShape[dim] = 1
+    Value zero = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getIndexType(), rewriter.getIndexAttr(0));
     Value one = rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexType(),
                                                    rewriter.getIndexAttr(1));
 
@@ -83,12 +86,13 @@ public:
 
     for (size_t dim = 0; dim < gridShape.size(); ++dim) {
       if (mcastDimSet.contains(static_cast<int64_t>(dim))) {
-        // Multicast dimension: sender at core 0, multicast to all other cores
-        int64_t numDests = gridShape[dim] - 1;
-        Value gridDimMinusOne = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIndexType(), rewriter.getIndexAttr(numDests));
-        mcastStartIndex.push_back(one);
-        mcastShape.push_back(gridDimMinusOne);
+        // Multicast dimension: self-inclusive multicast from sender at core 0
+        // to all cores in this dimension (including sender itself).
+        int64_t numCores = gridShape[dim];
+        Value gridDimSize = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getIndexType(), rewriter.getIndexAttr(numCores));
+        mcastStartIndex.push_back(zero);
+        mcastShape.push_back(gridDimSize);
       } else {
         // Parallel dimension: mcast to self only
         Value coreIdx =
