@@ -2,12 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttmlir/AffineMapUtils.h"
 #include "ttmlir/Dialect/D2M/Transforms/Passes.h"
+#include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallBitVector.h"
 
 namespace mlir::tt::d2m {
 #define GEN_PASS_DEF_D2MLOWERMULTICASTLOADS
@@ -76,30 +80,51 @@ public:
     //   - mcastShape[dim] = 1
     Value zero = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getIndexType(), rewriter.getIndexAttr(0));
-    Value one = rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexType(),
-                                                   rewriter.getIndexAttr(1));
 
     SmallVector<Value> mcastStartIndex;
-    SmallVector<Value> mcastShape;
+    SmallVector<int64_t> mcastShapeInt64;
     mcastStartIndex.reserve(gridShape.size());
-    mcastShape.reserve(gridShape.size());
+    mcastShapeInt64.reserve(gridShape.size());
 
     for (size_t dim = 0; dim < gridShape.size(); ++dim) {
       if (mcastDimSet.contains(static_cast<int64_t>(dim))) {
         // Multicast dimension: self-inclusive multicast from sender at core 0
         // to all cores in this dimension (including sender itself).
-        int64_t numCores = gridShape[dim];
-        Value gridDimSize = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIndexType(), rewriter.getIndexAttr(numCores));
         mcastStartIndex.push_back(zero);
-        mcastShape.push_back(gridDimSize);
+        mcastShapeInt64.push_back(gridShape[dim]);
       } else {
         // Parallel dimension: mcast to self only
-        Value coreIdx =
-            rewriter.create<CoreIndexOp>(loc, static_cast<int64_t>(dim));
+        // Pass grid mapping for proper virtualization support.
+        Value coreIdx = rewriter.create<CoreIndexOp>(
+            loc, static_cast<int64_t>(dim), grid.getMapping());
         mcastStartIndex.push_back(coreIdx);
-        mcastShape.push_back(one);
+        mcastShapeInt64.push_back(1);
       }
+    }
+
+    // Convert virtual multicast shape to physical shape if virtualization is
+    // present.
+    Value outputOperand = genericOp.getOutputs().front();
+    auto outputShardLayout = mlir::cast<ttcore::ShardLayoutAttr>(
+        ttcore::getDeviceLayout(outputOperand));
+    if (!outputShardLayout.getCoreVirtualizationMap().isEmpty()) {
+      // We project out the shard layout dims and results from the indexing map
+      // before applying since we are only concerned with the grid dimensions.
+      auto coreVirtMap = outputShardLayout.getCoreVirtualizationMap();
+      auto dimsToRemove = coreVirtMap.getNumResults() - mcastShapeInt64.size();
+      llvm::SmallBitVector projectedDims(coreVirtMap.getNumDims());
+      projectedDims.set(dimsToRemove, coreVirtMap.getNumDims());
+      auto projectedMap = getProjectedMap(coreVirtMap, projectedDims);
+      projectedMap = projectedMap.dropResults(projectedDims);
+      mcastShapeInt64 = ttmlir::utils::evalShape(projectedMap, mcastShapeInt64);
+    }
+
+    // Convert int64_t mcast shape to Values.
+    SmallVector<Value> mcastShape;
+    mcastShape.reserve(mcastShapeInt64.size());
+    for (int64_t dimSize : mcastShapeInt64) {
+      mcastShape.push_back(rewriter.create<arith::ConstantOp>(
+          loc, rewriter.getIndexType(), rewriter.getIndexAttr(dimSize)));
     }
 
     // Create replacement RemoteLoadOp with low-level multicast form.

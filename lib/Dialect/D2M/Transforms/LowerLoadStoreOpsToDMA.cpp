@@ -475,11 +475,13 @@ public:
     // Determine if this core is the sender.
     // By convention, core 0 along each multicast dimension is the sender.
     // We need to check that ALL multicast dimensions have core_index == 0.
+    // Pass grid mapping for proper virtualization support.
     Value isSender = nullptr;
+    AffineMap gridMapping = genericOp.getGrid().getMapping();
     for (size_t i = 0; i < isMcastDim.size(); ++i) {
       if (isMcastDim[i]) {
-        Value coreIdx =
-            rewriter.create<CoreIndexOp>(loc, static_cast<int64_t>(i));
+        Value coreIdx = rewriter.create<CoreIndexOp>(
+            loc, static_cast<int64_t>(i), gridMapping);
         Value condition = rewriter.create<arith::CmpIOp>(
             loc, rewriter.getI1Type(), arith::CmpIPredicate::eq, coreIdx, zero);
         if (isSender) {
@@ -551,14 +553,15 @@ public:
           // Build sender core index by reading actual core positions
           // For dimensions that are multicast, sender is at position 0
           // For non-multicast dimensions, use current core position
+          // Pass grid mapping for proper virtualization support.
           for (size_t i = 0; i < isMcastDim.size(); ++i) {
             if (isMcastDim[i]) {
               // Multicast dimension - sender is at 0
               senderCoreIndex.push_back(zeroIdx);
             } else {
               // Non-multicast dimension - use current core's position
-              Value currentCoreIdx =
-                  builder.create<CoreIndexOp>(loc, static_cast<int64_t>(i));
+              Value currentCoreIdx = builder.create<CoreIndexOp>(
+                  loc, static_cast<int64_t>(i), gridMapping);
               senderCoreIndex.push_back(currentCoreIdx);
             }
           }
