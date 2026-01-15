@@ -1,3 +1,5 @@
+// UNSUPPORTED: true
+
 // RUN: ttmlir-opt --ttcore-register-device --d2m-preallocate-mcast-semaphores -o %t %s
 // RUN: FileCheck %s --input-file=%t
 

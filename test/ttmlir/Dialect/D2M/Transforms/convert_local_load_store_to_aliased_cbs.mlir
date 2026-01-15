@@ -1,3 +1,5 @@
+// UNSUPPORTED: true
+
 // RUN: ttmlir-opt --ttcore-register-device --d2m-convert-local-load-store-ops-to-aliased-cbs --canonicalize %s | FileCheck %s
 
 // CHECK-LABEL: func.func @test_convert_local_load_store

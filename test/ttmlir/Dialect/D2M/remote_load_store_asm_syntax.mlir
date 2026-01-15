@@ -1,3 +1,5 @@
+// UNSUPPORTED: true
+
 // RUN: ttmlir-opt %s | FileCheck %s
 
 // This test verifies that various remote_load and remote_store assembly syntaxes

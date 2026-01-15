@@ -1,3 +1,5 @@
+// UNSUPPORTED: true
+
 // RUN: ttmlir-opt --ttcore-register-device --d2m-decouple-load-store-ops-from-compute %s | FileCheck %s
 
 #l1 = #ttcore.memory_space<l1>

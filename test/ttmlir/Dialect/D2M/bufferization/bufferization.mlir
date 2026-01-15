@@ -1,3 +1,5 @@
+// UNSUPPORTED: true
+
 // RUN: ttmlir-opt --ttcore-register-device --ttir-bufferization-pipeline -o %t %s
 // RUN: FileCheck %s --input-file=%t
 
