@@ -146,29 +146,6 @@ static Value createRemoteStore(OpBuilder &builder, Location loc,
       .getResult();
 }
 
-// Build grid indices and create RemoteLoadOp in one call
-static Value buildRemoteLoadWithIndices(OpBuilder &builder, Location loc,
-                                        Value cbBlockArg, Value source,
-                                        AffineMap indexingMap) {
-  Type shardType = getShardTypeFromCB(cbBlockArg);
-  SmallVector<Value> indices =
-      d2m::utils::buildGridIndices(builder, loc, indexingMap);
-  return createRemoteLoad(builder, loc, shardType, source, indices);
-}
-
-// Acquire buffer, build indices, store, and return the store result
-static Value buildAcquireAndStoreWithIndices(OpBuilder &builder, Location loc,
-                                             Value cbBlockArg,
-                                             Value destination,
-                                             AffineMap indexingMap,
-                                             int64_t operandIndex) {
-  Type shardType = getShardTypeFromCB(cbBlockArg);
-  SmallVector<Value> indices =
-      d2m::utils::buildGridIndices(builder, loc, indexingMap);
-  Value buffer = createAcquireBuffer(builder, loc, shardType, operandIndex);
-  return createRemoteStore(builder, loc, destination, indices, buffer);
-}
-
 // Complete identity load-store pattern: load from input, acquire output buffer,
 // and return both along with the indices. This is useful for operations that
 // need to perform transformations between load and store (e.g., tilize, mask).
@@ -519,10 +496,18 @@ public:
           .create<GenericOp>(
               loc, viewOp, output,
               [&](OpBuilder &builder, Location innerLoc, ValueRange blockArgs) {
-                // Remote input, local output: remote_load (implicit form)
-                Value loadResult = buildRemoteLoadWithIndices(
-                    builder, innerLoc, blockArgs[1], viewOp, indexingMap);
-                builder.create<YieldOp>(innerLoc, loadResult);
+                // Load from input, store to output (load+store pair for proper
+                // CB association)
+                Type inputShardType = getShardTypeFromCB(blockArgs[0]);
+                SmallVector<Value> indices = d2m::utils::buildGridIndices(
+                    builder, innerLoc, indexingMap);
+
+                // Load-store idiom
+                Value loadedData = createRemoteLoad(
+                    builder, innerLoc, inputShardType, viewOp, indices);
+                Value storeResult = createRemoteStore(builder, innerLoc, output,
+                                                      indices, loadedData);
+                builder.create<YieldOp>(innerLoc, storeResult);
               },
               ThreadType::Unified, grid)
           .getResult(0);
@@ -638,26 +623,25 @@ public:
     auto indexingMapAttr = mlir::cast<AffineMapAttr>(indexingMaps[0]);
     AffineMap indexingMap = indexingMapAttr.getValue();
 
-    auto result = rewriter
-                      .create<GenericOp>(
-                          loc, viewInput, viewOutput,
-                          [&](OpBuilder &builder, Location innerLoc,
-                              ValueRange blockArgs) {
-                            if (isSrcDramOrReblock) {
-                              Value loadResult = buildRemoteLoadWithIndices(
-                                  builder, innerLoc, blockArgs[1], viewInput,
-                                  indexingMap);
-                              builder.create<YieldOp>(innerLoc, loadResult);
-                            } else {
-                              Value storeResult =
-                                  buildAcquireAndStoreWithIndices(
-                                      builder, innerLoc, blockArgs[0],
-                                      viewOutput, indexingMap, 0);
-                              builder.create<YieldOp>(innerLoc, storeResult);
-                            }
-                          },
-                          ThreadType::Unified)
-                      .getResult(0);
+    auto result =
+        rewriter
+            .create<GenericOp>(
+                loc, viewInput, viewOutput,
+                [&](OpBuilder &builder, Location innerLoc,
+                    ValueRange blockArgs) {
+                  Type inputShardType = getShardTypeFromCB(blockArgs[0]);
+                  SmallVector<Value> indices = d2m::utils::buildGridIndices(
+                      builder, innerLoc, indexingMap);
+
+                  // Use load+store idiom for proper CB association
+                  Value loadedData = createRemoteLoad(
+                      builder, innerLoc, inputShardType, viewInput, indices);
+                  Value storeResult = createRemoteStore(
+                      builder, innerLoc, viewOutput, indices, loadedData);
+                  builder.create<YieldOp>(innerLoc, storeResult);
+                },
+                ThreadType::Unified)
+            .getResult(0);
     return result;
   }
 

@@ -77,27 +77,26 @@ Value materializeView(OpBuilder &builder, Location loc, Value viewResult) {
                                                          /*arity=*/2, rank);
 
   // Create a datamovement generic op that materializes the view.
-  // The region reserves the output circular buffer, issues a remote_load to
-  // fetch data from the view (which applies the affine transformation), then
-  // yields the load result.
   auto indexingMapAttr = mlir::cast<AffineMapAttr>(indexingMaps[0]);
   AffineMap indexingMap = indexingMapAttr.getValue();
   auto genericOp = builder.create<GenericOp>(
       loc, viewResult, emptyOp.getResult(),
       [&](OpBuilder &builder, Location innerLoc, ValueRange blockArgs) {
-        // Build grid indices from the indexing map.
         SmallVector<Value> indices =
             utils::buildGridIndices(builder, innerLoc, indexingMap);
-        // Issue a remote_load from the view to the output buffer.
-        auto cbType = mlir::cast<d2m::CBType>(blockArgs[1].getType());
-        auto shardType = cbType.getUnderlying();
-        Value loadResult =
+        auto inputCbType = mlir::cast<d2m::CBType>(blockArgs[0].getType());
+        auto inputShardType = inputCbType.getUnderlying();
+
+        Value loadedData = builder
+                               .create<RemoteLoadOp>(innerLoc, inputShardType,
+                                                     viewResult, indices)
+                               .getResult();
+        Value storeResult =
             builder
-                .create<RemoteLoadOp>(innerLoc, shardType, viewResult, indices)
+                .create<RemoteStoreOp>(innerLoc, emptyOp.getType(),
+                                       emptyOp.getResult(), indices, loadedData)
                 .getResult();
-        // View transformation is handled by view_layout and the generic op's
-        // indexing maps.
-        builder.create<d2m::YieldOp>(innerLoc, loadResult);
+        builder.create<d2m::YieldOp>(innerLoc, storeResult);
       },
       ThreadType::Unified, grid, SmallVector<int64_t>{1, 1});
 

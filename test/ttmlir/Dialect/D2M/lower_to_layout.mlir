@@ -33,11 +33,12 @@ func.func @reblock(%arg0: tensor<1x1x8x24x!ttcore.tile<32x32, f32>, #layout2>) -
   %0 = d2m.empty() : tensor<8x8x1x3x!ttcore.tile<32x32, f32>, #layout2>
 
   // CHECK-LABEL: @reblock
-  // Grid reblocking emits view_layout + generic with remote_load
+  // Grid reblocking emits view_layout + generic with load+store pair
   // CHECK: %[[VIEW:.*]] = d2m.view_layout
   // CHECK: d2m.generic
   // CHECK-SAME: threads = [#d2m.thread<unified>]
   // CHECK: d2m.remote_load
+  // CHECK: d2m.remote_store
 
   %1 = d2m.to_layout %arg0, %0 : tensor<1x1x8x24x!ttcore.tile<32x32, f32>, #layout2> into tensor<8x8x1x3x!ttcore.tile<32x32, f32>, #layout2>
     -> tensor<8x8x1x3x!ttcore.tile<32x32, f32>, #layout2>
@@ -121,11 +122,12 @@ func.func @padding_change(%arg0: tensor<2x4x32x32xf32, #layout_pad32>) -> tensor
   %0 = d2m.empty() : tensor<2x2x64x64xf32, #layout_pad64>
 
   // CHECK-LABEL: @padding_change
-  // Padding changes (same logical shape, different alignments) emit view_layout + generic with remote_load
+  // Padding changes (same logical shape, different alignments) emit view_layout + generic with load+store pair
   // CHECK: %[[VIEW:.*]] = d2m.view_layout
   // CHECK: d2m.generic
   // CHECK-SAME: threads = [#d2m.thread<unified>]
   // CHECK: d2m.remote_load
+  // CHECK: d2m.remote_store
 
   %1 = d2m.to_layout %arg0, %0 : tensor<2x4x32x32xf32, #layout_pad32> into tensor<2x2x64x64xf32, #layout_pad64>
     -> tensor<2x2x64x64xf32, #layout_pad64>
@@ -141,11 +143,12 @@ func.func @compound_reblock_pad(%arg0: tensor<4x2x32x32xf32, #layout_src_compoun
   %0 = d2m.empty() : tensor<2x4x64x32xf32, #layout_dst_compound>
 
   // CHECK-LABEL: @compound_reblock_pad
-  // Combined grid reblock + padding emits view_layout + generic with remote_load
+  // Combined grid reblock + padding emits view_layout + generic with load+store pair
   // CHECK: %[[VIEW:.*]] = d2m.view_layout
   // CHECK: d2m.generic
   // CHECK-SAME: threads = [#d2m.thread<unified>]
   // CHECK: d2m.remote_load
+  // CHECK: d2m.remote_store
 
   %1 = d2m.to_layout %arg0, %0 : tensor<4x2x32x32xf32, #layout_src_compound> into tensor<2x4x64x32xf32, #layout_dst_compound>
     -> tensor<2x4x64x32xf32, #layout_dst_compound>
@@ -181,11 +184,12 @@ func.func @chained_view(%arg0: tensor<2x4x32x32xf32, #layout_base_view>) -> tens
   %0 = d2m.empty() : tensor<4x2x32x32xf32, #layout_with_view>
 
   // CHECK-LABEL: @chained_view
-  // View chaining (no grid change, just index_map addition) emits view_layout + generic with remote_load
+  // View chaining (no grid change, just index_map addition) emits view_layout + generic with load+store pair
   // CHECK: %[[VIEW:.*]] = d2m.view_layout
   // CHECK: d2m.generic
   // CHECK-SAME: threads = [#d2m.thread<unified>]
   // CHECK: d2m.remote_load
+  // CHECK: d2m.remote_store
 
   %1 = d2m.to_layout %arg0, %0 : tensor<2x4x32x32xf32, #layout_base_view> into tensor<4x2x32x32xf32, #layout_with_view>
     -> tensor<4x2x32x32xf32, #layout_with_view>
