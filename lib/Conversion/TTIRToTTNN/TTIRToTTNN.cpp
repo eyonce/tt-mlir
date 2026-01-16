@@ -2350,6 +2350,24 @@ public:
 };
 } // namespace
 
+namespace {
+class DropoutOpConversionPattern : public OpConversionPattern<ttir::DropoutOp> {
+public:
+  using OpConversionPattern<ttir::DropoutOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttir::DropoutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<ttnn::DropoutOp>(
+        op, this->getTypeConverter()->convertType(op.getType()),
+        adaptor.getInput(), adaptor.getProb(), adaptor.getScale(),
+        adaptor.getSeed(), adaptor.getUsePerDeviceSeed(),
+        /*memory_config=*/nullptr);
+    return success();
+  }
+};
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // ScatterOp
 //===----------------------------------------------------------------------===//
@@ -2962,7 +2980,8 @@ void populateTTIRToTTNNPatterns(MLIRContext *ctx, RewritePatternSet &patterns,
            ScaledDotProductAttentionDecodeOpConversionPattern,
            PagedScaledDotProductAttentionDecodeOpConversionPattern,
            SplitQueryKeyValueAndSplitHeadsOpConversionPattern,
-           GeluBackwardOpConversionPattern
+           GeluBackwardOpConversionPattern,
+           DropoutOpConversionPattern
            >(typeConverter, ctx);
   // ANCHOR_END: op_rewriter_pattern_set
   // clang-format on
