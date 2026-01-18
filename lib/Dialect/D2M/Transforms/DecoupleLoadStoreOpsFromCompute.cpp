@@ -25,7 +25,9 @@ static bool isRemoteOperand(Value operand, Operation *op) {
   // In DMA-only form, a viewed operand is considered remote; otherwise local
   GenericOp generic = op->getParentOfType<GenericOp>();
   if (generic && generic.isDMAOnlyForm()) {
-    return mlir::isa_and_nonnull<ViewLayoutOp>(operand.getDefiningOp());
+    Operation *defOp = operand.getDefiningOp();
+    return mlir::isa_and_nonnull<ViewLayoutOp>(defOp) ||
+           mlir::isa_and_nonnull<StreamLayoutOp>(defOp);
   }
 
   // Remote operands are those that come from stream_layout ops
