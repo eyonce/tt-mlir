@@ -847,10 +847,11 @@ def D2MLowerLoadStoreOpsToDMA : Pass<"d2m-lower-load-store-ops-to-dma", "::mlir:
   ];
 }
 
-def D2MDecoupleLoadStoreOpsFromCompute : Pass<"d2m-decouple-load-store-ops-from-compute", "::mlir::ModuleOp"> {
-  let summary = "Decouple load/store operations from compute.";
+def D2MLowerLoadStoreOpsToExplicitCBForm : Pass<"d2m-lower-load-store-ops-to-explicit-cb-form", "::mlir::ModuleOp"> {
+  let summary = "Lower load/store operations to explicit CB form.";
   let description = [{
-    This pass decouples load/store operations from compute operations.
+    This pass converts remote_load and remote_store operations from implicit form
+    to explicit CB form, and converts acquire_buffer to reserve operations.
   }];
   let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
 }

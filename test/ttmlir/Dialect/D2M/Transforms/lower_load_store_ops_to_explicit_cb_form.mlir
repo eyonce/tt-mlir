@@ -1,4 +1,4 @@
-// RUN: ttmlir-opt --ttcore-register-device --d2m-decouple-load-store-ops-from-compute %s | FileCheck %s
+// RUN: ttmlir-opt --ttcore-register-device --d2m-lower-load-store-ops-to-explicit-cb-form %s | FileCheck %s
 
 #l1 = #ttcore.memory_space<l1>
 #dram = #ttcore.memory_space<dram>

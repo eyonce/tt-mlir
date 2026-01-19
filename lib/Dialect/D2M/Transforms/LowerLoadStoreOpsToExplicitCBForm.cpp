@@ -13,7 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir::tt::d2m {
-#define GEN_PASS_DEF_D2MDECOUPLELOADSTOREOPSFROMCOMPUTE
+#define GEN_PASS_DEF_D2MLOWERLOADSTOREOPSTOEXPLICITCBFORM
 #include "ttmlir/Dialect/D2M/Transforms/Passes.h.inc"
 
 namespace {
@@ -487,13 +487,13 @@ static void insertPushAndPopOps(ModuleOp moduleOp, IRRewriter &rewriter,
   }
 }
 
-class D2MDecoupleLoadStoreOpsFromCompute
-    : public impl::D2MDecoupleLoadStoreOpsFromComputeBase<
-          D2MDecoupleLoadStoreOpsFromCompute> {
+class D2MLowerLoadStoreOpsToExplicitCBForm
+    : public impl::D2MLowerLoadStoreOpsToExplicitCBFormBase<
+          D2MLowerLoadStoreOpsToExplicitCBForm> {
 public:
-  using impl::D2MDecoupleLoadStoreOpsFromComputeBase<
-      D2MDecoupleLoadStoreOpsFromCompute>::
-      D2MDecoupleLoadStoreOpsFromComputeBase;
+  using impl::D2MLowerLoadStoreOpsToExplicitCBFormBase<
+      D2MLowerLoadStoreOpsToExplicitCBForm>::
+      D2MLowerLoadStoreOpsToExplicitCBFormBase;
 
   void runOnOperation() final {
     ModuleOp moduleOp = getOperation();
