@@ -9,6 +9,7 @@
 #include "ttmlir/Dialect/D2M/Transforms/Passes.h"
 #include "ttmlir/Dialect/TTCore/IR/TTCore.h"
 #include "ttmlir/Dialect/TTIR/IR/TTIROps.h"
+#include "ttmlir/Utils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -50,13 +51,18 @@ traceConstantToGenericOps(Operation *constOp,
 
     while (Value result = getLayoutOrCastResult(currentOp)) {
       currentValue = result;
-      if (currentValue.getUsers().empty()) {
-        break;
-      }
       // NOTE: This only follows the first user. If a result has
       // multiple users, only one path will be traced. This is acceptable for
       // the current use case but may miss optimization opportunities.
-      currentOp = *currentValue.getUsers().begin();
+      for (Operation *user : currentValue.getUsers()) {
+        // RemoteLoadOps are embedded within a GenericOp, so we skip them to try
+        // to find the enclosing GenericOp.
+        if (isa<RemoteLoadOp>(user)) {
+          continue;
+        }
+        currentOp = user;
+        break;
+      }
     }
 
     if (auto genericOp = dyn_cast<GenericOp>(currentOp)) {
@@ -76,19 +82,11 @@ findLinalgBlockArgsForGenericInput(GenericOp genericOp,
   for (Region &region : genericOp.getRegions()) {
     region.walk([&](linalg::GenericOp linalgOp) {
       Block *linalgBlock = linalgOp.getBody();
-
       for (auto [linalgArgIdx, linalgInput] :
            llvm::enumerate(linalgOp.getInputs())) {
-        Value tracedValue = linalgInput;
-        Operation *defOp = tracedValue.getDefiningOp();
-
-        if (auto waitOp = dyn_cast_or_null<WaitOp>(defOp)) {
-          tracedValue = waitOp.getCb();
-        }
-
-        if (auto blockArg = dyn_cast<BlockArgument>(tracedValue)) {
-          if (blockArg.getOwner()->getParentOp() == genericOp.getOperation() &&
-              blockArg.getArgNumber() == genericInputIdx) {
+        if (auto remoteLoadOp = linalgInput.getDefiningOp<RemoteLoadOp>()) {
+          if (remoteLoadOp.getMemref() ==
+              genericOp.getOperand(genericInputIdx)) {
             linalgArgs.push_back(linalgBlock->getArgument(linalgArgIdx));
           }
         }
@@ -119,6 +117,30 @@ static SmallVector<unsigned> findScalarizedInputIndices(Block *block,
     }
   }
   return scalarizedIndices;
+}
+
+// Build a list of unused input operands for a GenericOp.
+static SmallVector<unsigned> findUnusedGenericInputIndices(GenericOp genericOp) {
+  SmallVector<unsigned> unusedIndices;
+  
+  auto isInputUsed = [&](Value input) {
+    for (Region &region : genericOp.getRegions()) {
+      for (Operation &op : region.getOps()) {
+        if (llvm::is_contained(op.getOperands(), input)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (auto [idx, input] : llvm::enumerate(genericOp.getInputs())) {
+    if (!isInputUsed(input)) {
+      unusedIndices.push_back(idx);
+    }
+  }
+
+  return unusedIndices;
 }
 
 template <typename RangeT>
@@ -286,6 +308,8 @@ public:
         continue;
       }
 
+      // Replace each candidate const linalg block argument with a scalar
+      // constant if possible.
       for (BlockArgument arg : linalgArgs) {
         bool canScalarize = false;
         for (Operation *user : arg.getUsers()) {
@@ -317,6 +341,7 @@ public:
 
         for (Operation *user : llvm::make_early_inc_range(arg.getUsers())) {
           if (isScalarRhsUse(user, arg)) {
+            llvm::dbgs() << "scalarizing op" << *user << " with arg" << arg << "\n";
             rewriter.modifyOpInPlace(
                 user, [&]() { user->setOperand(1, scalarConst); });
             madeChanges = true;
@@ -338,6 +363,7 @@ public:
       }
     }
 
+    // rewrite modified linalg.generic ops to remove unused inputs 
     for (linalg::GenericOp linalgOp : linalgOpsToCleanup) {
       Block *linalgBlock = linalgOp.getBody();
       SmallVector<unsigned> scalarizedInputIndices =
@@ -347,14 +373,14 @@ public:
         continue;
       }
 
-      // Collect wait ops that will become dead after removing scalarized
+      // Collect remote load ops that will become dead after removing scalarized
       // inputs.
-      SmallVector<WaitOp> waitOpsToErase;
+      SmallVector<RemoteLoadOp> remoteLoadOpsToErase;
       for (unsigned idx : scalarizedInputIndices) {
         Value input = linalgOp.getInputs()[idx];
-        if (auto waitOp = input.getDefiningOp<WaitOp>()) {
-          if (waitOp->hasOneUse()) {
-            waitOpsToErase.push_back(waitOp);
+        if (auto remoteLoadOp = input.getDefiningOp<RemoteLoadOp>()) {
+          if (remoteLoadOp->hasOneUse()) {
+            remoteLoadOpsToErase.push_back(remoteLoadOp);
           }
         }
       }
@@ -364,28 +390,27 @@ public:
 
       rewriter.replaceOp(linalgOp, newLinalgOp.getResults());
 
-      for (WaitOp waitOp : waitOpsToErase) {
-        rewriter.eraseOp(waitOp);
+      // Erase RemoteLoadOps after rebuilding linalg.generic
+      for (RemoteLoadOp remoteLoadOp : remoteLoadOpsToErase) {
+        rewriter.eraseOp(remoteLoadOp);
       }
 
       madeChanges = true;
     }
 
     for (GenericOp genericOp : genericOpsToCleanup) {
-      if (!genericOp.getRegions().empty()) {
-        Block *block = &genericOp.getRegions().front().front();
-        unsigned numInputs = genericOp.getInputs().size();
-        SmallVector<unsigned> scalarizedInputIndices =
-            findScalarizedInputIndices(block, numInputs);
+      SmallVector<unsigned> unusedInputIndices =
+          findUnusedGenericInputIndices(genericOp);
 
-        if (!scalarizedInputIndices.empty()) {
-          auto newGenericOp = rebuildD2MGenericWithoutScalarizedInputs(
-              genericOp, scalarizedInputIndices, rewriter);
-
-          rewriter.replaceOp(genericOp, newGenericOp.getResults());
-          madeChanges = true;
-        }
+      if (unusedInputIndices.empty()) {
+        continue;
       }
+
+      auto newGenericOp = rebuildD2MGenericWithoutScalarizedInputs(
+          genericOp, unusedInputIndices, rewriter);
+
+      rewriter.replaceOp(genericOp, newGenericOp.getResults());
+      madeChanges = true;
     }
 
     return madeChanges ? success() : failure();
