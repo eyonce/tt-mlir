@@ -177,7 +177,6 @@ struct TTIRToTTMetalPipelineOptions
                      "operations"),
       llvm::cl::init(true)};
 
-
   // Option to enable debug mode for coalescing inference in DMA lowering.
   // When enabled, runs both analytical and sampling-based coalescing checks
   // and prints debug output comparing them.

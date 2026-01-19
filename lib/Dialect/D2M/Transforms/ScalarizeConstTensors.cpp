@@ -120,9 +120,10 @@ static SmallVector<unsigned> findScalarizedInputIndices(Block *block,
 }
 
 // Build a list of unused input operands for a GenericOp.
-static SmallVector<unsigned> findUnusedGenericInputIndices(GenericOp genericOp) {
+static SmallVector<unsigned>
+findUnusedGenericInputIndices(GenericOp genericOp) {
   SmallVector<unsigned> unusedIndices;
-  
+
   auto isInputUsed = [&](Value input) {
     for (Region &region : genericOp.getRegions()) {
       for (Operation &op : region.getOps()) {
@@ -252,8 +253,7 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
     }
   }
   // Map output operands (these shift down by the number of removed inputs)
-  for (unsigned oldIdx = numInputs; oldIdx < numInputs + numOutputs;
-       ++oldIdx) {
+  for (unsigned oldIdx = numInputs; oldIdx < numInputs + numOutputs; ++oldIdx) {
     operandIndexRemap[oldIdx] = newOperandIdx++;
   }
 
@@ -289,7 +289,8 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
     for (Operation &op : oldBlock->without_terminator()) {
       Operation *clonedOp = rewriter.clone(op, mapping);
       // Update operand_index attribute for acquire_buffer operations
-      if (auto acquireBufferOp = mlir::dyn_cast<d2m::AcquireBufferOp>(clonedOp)) {
+      if (auto acquireBufferOp =
+              mlir::dyn_cast<d2m::AcquireBufferOp>(clonedOp)) {
         if (acquireBufferOp.getOperandIndex().has_value()) {
           uint64_t oldOperandIdx = acquireBufferOp.getOperandIndex().value();
           auto it = operandIndexRemap.find(oldOperandIdx);
@@ -391,7 +392,7 @@ public:
       }
     }
 
-    // rewrite modified linalg.generic ops to remove unused inputs 
+    // rewrite modified linalg.generic ops to remove unused inputs
     for (linalg::GenericOp linalgOp : linalgOpsToCleanup) {
       Block *linalgBlock = linalgOp.getBody();
       SmallVector<unsigned> scalarizedInputIndices =

@@ -112,7 +112,6 @@ void createTTIRToTTMetalFrontendPipeline(
   pm.addPass(d2m::createD2MMaterializeViewReturns());
 }
 
-
 void createTTIRToTTMetalUnifiedMiddleendPipeline(
     OpPassManager &pm, const TTIRToTTMetalPipelineOptions &options) {
   d2m::D2MElementwiseFusionOptions elementwiseFusionOptions;
@@ -121,7 +120,7 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
         options.maxDstPhysicalSizeTiles;
   }
   pm.addPass(d2m::createD2MElementwiseFusion(elementwiseFusionOptions));
-  pm.addPass(createLinalgElementwiseOpFusionPass());
+  //pm.addPass(createLinalgElementwiseOpFusionPass());
   pm.addPass(mlir::createCanonicalizerPass());
   if (options.ttnnMode) {
     bufferization::OneShotBufferizePassOptions bufferizePassOptions;
