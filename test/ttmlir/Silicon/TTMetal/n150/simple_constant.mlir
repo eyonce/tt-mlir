@@ -22,7 +22,8 @@ module {
     // CHECK-SAME: #ttcore.host_layout
     // CHECK: memref.copy
     // CHECK: "ttmetal.enqueue_write_buffer"
-    // CHECK: memref.alloc
+    // CHECK: "ttmetal.deallocate_buffer"
+    // CHECK: memref.alloc() : memref<9x43x7xf32>
     // CHECK-NOT: #ttcore.host_layout
     // CHECK: memref.alloc
     // CHECK-SAME: #ttcore.host_layout

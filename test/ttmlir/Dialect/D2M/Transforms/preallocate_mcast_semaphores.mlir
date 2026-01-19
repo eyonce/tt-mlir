@@ -32,7 +32,7 @@ module {
           %0 = arith.addi %core0, %arg1 : index
           %1 = arith.addi %core1, %arg2 : index
           // Multicast remote_load: has mcastStartIndex [%c0, %c0] and mcastShape [%c1, %c4]
-          d2m.remote_load %arg0[%0, %1] into %cb0 core[%c0, %c0] mcast[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
+          d2m.remote_load %arg0[%0, %1] into %cb0 mcore[%c0, %c0] mshape[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
         } {d2m.outer_loop}
       } {d2m.outer_loop}
     }, {
@@ -115,9 +115,9 @@ module {
           %0 = arith.addi %core0, %arg2 : index
           %1 = arith.addi %core1, %arg3 : index
           // First multicast load for operand A
-          d2m.remote_load %arg0[%0, %1] into %cb0 core[%c0, %c0] mcast[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
+          d2m.remote_load %arg0[%0, %1] into %cb0 mcore[%c0, %c0] mshape[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
           // Second multicast load for operand B
-          d2m.remote_load %arg1[%0, %1] into %cb1 core[%c0, %c0] mcast[%c4, %c1] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
+          d2m.remote_load %arg1[%0, %1] into %cb1 mcore[%c0, %c0] mshape[%c4, %c1] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
         } {d2m.outer_loop}
       } {d2m.outer_loop}
     }, {
@@ -162,7 +162,7 @@ module {
           %0 = arith.addi %core0, %arg2 : index
           %1 = arith.addi %core1, %arg3 : index
           // Multicast load
-          d2m.remote_load %arg0[%0, %1] into %cb0 core[%c0, %c0] mcast[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
+          d2m.remote_load %arg0[%0, %1] into %cb0 mcore[%c0, %c0] mshape[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
           // Non-multicast load
           d2m.remote_load %arg1[%0, %1] into %cb1 : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.view<map(4)>, #dram> into !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>
         } {d2m.outer_loop}
