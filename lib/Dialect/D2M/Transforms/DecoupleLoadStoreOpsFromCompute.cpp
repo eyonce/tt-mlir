@@ -195,10 +195,10 @@ static void simplifyLoadStorePairsInDMAOnlyGenerics(ModuleOp moduleOp,
 
     // Find operand indices (verification guarantees these exist)
     auto opOperands = generic->getOpOperands();
-    auto loadOperandIt = llvm::find_if(opOperands, [&](OpOperand &opOperand) {
+    auto *loadOperandIt = llvm::find_if(opOperands, [&](OpOperand &opOperand) {
       return opOperand.get() == loadMemref;
     });
-    auto storeOperandIt = llvm::find_if(opOperands, [&](OpOperand &opOperand) {
+    auto *storeOperandIt = llvm::find_if(opOperands, [&](OpOperand &opOperand) {
       return opOperand.get() == storeMemref;
     });
     TT_assert((loadOperandIt != opOperands.end() &&
