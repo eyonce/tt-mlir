@@ -3,11 +3,7 @@ add_mlir_dialect_library(MLIRD2MTransforms
         DecomposeMasking.cpp
         DecomposeComplexPermute.cpp
         GenericApplyInterchange.cpp
-        GenericGenerateDatamovement.cpp
-        GenericGenerateLoops.cpp
-        GenericHWThreadSelection.cpp
         GenericLinearizeMemref.cpp
-        GenericLowerDMAs.cpp
         GenericRegionsToFuncs.cpp
         GenericReplaceGlobals.cpp
         GenericTileComputeLoops.cpp
