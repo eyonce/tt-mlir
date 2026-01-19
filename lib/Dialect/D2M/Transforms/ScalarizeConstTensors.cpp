@@ -225,6 +225,7 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
     GenericOp genericOp, ArrayRef<unsigned> scalarizedInputIndices,
     PatternRewriter &rewriter) {
   unsigned numInputs = genericOp.getInputs().size();
+  unsigned numOutputs = genericOp.getOutputs().size();
 
   SmallVector<Value> newGenericInputs = buildInputsWithoutScalarizedIndices(
       genericOp.getInputs(), scalarizedInputIndices);
@@ -238,6 +239,22 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
   }
   for (unsigned i = numInputs; i < oldMaps.size(); ++i) {
     newIndexingMaps.push_back(oldMaps[i]);
+  }
+
+  // Build operand index remapping: old operand index -> new operand index
+  // This is needed to update acquire_buffer operand_index attributes
+  llvm::DenseMap<uint64_t, uint64_t> operandIndexRemap;
+  unsigned newOperandIdx = 0;
+  // Map input operands (skip scalarized ones)
+  for (unsigned oldIdx = 0; oldIdx < numInputs; ++oldIdx) {
+    if (!llvm::is_contained(scalarizedInputIndices, oldIdx)) {
+      operandIndexRemap[oldIdx] = newOperandIdx++;
+    }
+  }
+  // Map output operands (these shift down by the number of removed inputs)
+  for (unsigned oldIdx = numInputs; oldIdx < numInputs + numOutputs;
+       ++oldIdx) {
+    operandIndexRemap[oldIdx] = newOperandIdx++;
   }
 
   rewriter.setInsertionPoint(genericOp);
@@ -270,7 +287,19 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
 
     rewriter.setInsertionPointToStart(newBlock);
     for (Operation &op : oldBlock->without_terminator()) {
-      rewriter.clone(op, mapping);
+      Operation *clonedOp = rewriter.clone(op, mapping);
+      // Update operand_index attribute for acquire_buffer operations
+      if (auto acquireBufferOp = mlir::dyn_cast<d2m::AcquireBufferOp>(clonedOp)) {
+        if (acquireBufferOp.getOperandIndex().has_value()) {
+          uint64_t oldOperandIdx = acquireBufferOp.getOperandIndex().value();
+          auto it = operandIndexRemap.find(oldOperandIdx);
+          if (it != operandIndexRemap.end()) {
+            uint64_t newOperandIdx = it->second;
+            acquireBufferOp.setOperandIndexAttr(
+                rewriter.getI64IntegerAttr(newOperandIdx));
+          }
+        }
+      }
     }
     if (oldBlock->mightHaveTerminator()) {
       rewriter.clone(*oldBlock->getTerminator(), mapping);
@@ -341,7 +370,6 @@ public:
 
         for (Operation *user : llvm::make_early_inc_range(arg.getUsers())) {
           if (isScalarRhsUse(user, arg)) {
-            llvm::dbgs() << "scalarizing op" << *user << " with arg" << arg << "\n";
             rewriter.modifyOpInPlace(
                 user, [&]() { user->setOperand(1, scalarConst); });
             madeChanges = true;
@@ -398,6 +426,7 @@ public:
       madeChanges = true;
     }
 
+    // Rebuild linalg.generic ops to remove unused inputs
     for (GenericOp genericOp : genericOpsToCleanup) {
       SmallVector<unsigned> unusedInputIndices =
           findUnusedGenericInputIndices(genericOp);
