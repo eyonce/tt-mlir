@@ -1,5 +1,3 @@
-// UNSUPPORTED: true
-
 // RUN: ttmlir-opt %s | FileCheck %s
 // RUN: ttmlir-opt --ttcore-one-shot-bufferize %s | FileCheck %s --check-prefix=BUFFERIZE
 
