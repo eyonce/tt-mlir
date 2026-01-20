@@ -11,6 +11,7 @@
 #include "ttmlir/Dialect/TTCore/IR/Utils.h"
 #include "ttmlir/Dialect/TTCore/Utils/AffineMapUtils.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/ArrayRef.h"
 
@@ -128,11 +129,13 @@ static Value createRemoteLoad(OpBuilder &builder, Location loc, Type shardType,
       .getResult();
 }
 
-// Create an AcquireBufferOp for a specific operand index
-static Value createAcquireBuffer(OpBuilder &builder, Location loc,
-                                 Type shardType, int64_t operandIndex) {
-  auto operandIndexAttr = builder.getI64IntegerAttr(operandIndex);
-  return builder.create<AcquireBufferOp>(loc, shardType, operandIndexAttr)
+// Create a tensor.empty with identical result type
+static Value createTensorEmpty(OpBuilder &builder, Location loc,
+                               Type shardType) {
+  auto tensorType = mlir::cast<RankedTensorType>(shardType);
+  return builder
+      .create<tensor::EmptyOp>(loc, tensorType.getShape(),
+                               tensorType.getElementType())
       .getResult();
 }
 
@@ -169,8 +172,7 @@ buildIdentityLoadStore(OpBuilder &builder, Location loc, Value inputCBBlockArg,
   SmallVector<Value> indices = buildIdentityGridIndices(builder, loc, gridRank);
 
   Value src = createRemoteLoad(builder, loc, inputShardType, input, indices);
-  Value dst =
-      createAcquireBuffer(builder, loc, outputShardType, outputOperandIndex);
+  Value dst = createTensorEmpty(builder, loc, outputShardType);
 
   return {src, dst, indices};
 }

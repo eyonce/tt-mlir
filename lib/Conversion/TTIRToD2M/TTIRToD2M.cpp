@@ -15,6 +15,7 @@
 #include "ttmlir/Dialect/TTNN/IR/TTNNOpsAttrs.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -476,18 +477,18 @@ protected:
       operands.push_back(loadResult);
     }
 
-    // Process output operands - create acquire_buffer operations
+    // Process output operands - create tensor.empty operations
     for (size_t i = 0; i < outputs.size(); ++i) {
       auto cbArg = block->getArgument(inputs.size() + i);
       auto cbType = mlir::cast<d2m::CBType>(cbArg.getType());
       auto shardType = cbType.getUnderlying();
 
-      // Create acquire_buffer with operand_index attribute
-      auto operandIndexAttr = builder.getI64IntegerAttr(inputs.size() + i);
-      auto acquireOp = builder.create<d2m::AcquireBufferOp>(loc, shardType,
-                                                            operandIndexAttr);
+      // Create tensor.empty with identical result type
+      auto tensorType = mlir::cast<RankedTensorType>(shardType);
+      auto emptyOp = builder.create<tensor::EmptyOp>(
+          loc, tensorType.getShape(), tensorType.getElementType());
 
-      operands.push_back(acquireOp.getResult());
+      operands.push_back(emptyOp.getResult());
     }
 
     return operands;
@@ -1460,11 +1461,12 @@ public:
                                              inputOperand, inputIndices)
                   .getResult();
 
-          // Create acquire_buffer for output
-          auto operandIndexAttr = builder.getI64IntegerAttr(1);
-          auto acquireOp = builder.create<d2m::AcquireBufferOp>(
-              bodyLoc, outputShardType, operandIndexAttr);
-          Value output = acquireOp.getResult();
+          // Create tensor.empty for output
+          auto outputTensorType = mlir::cast<RankedTensorType>(outputShardType);
+          auto emptyOp = builder.create<tensor::EmptyOp>(
+              bodyLoc, outputTensorType.getShape(),
+              outputTensorType.getElementType());
+          Value output = emptyOp.getResult();
 
           auto linalgGeneric = builder.create<mlir::linalg::GenericOp>(
               bodyLoc, output.getType(), input, output,
@@ -1955,6 +1957,9 @@ public:
 
     // Keep some TTIR ops legal if they don't have D2M equivalents.
     target.addLegalOp<ttir::TTNNMetalLayoutCastOp>();
+
+    // Tensor empty is used within GenericOp regions
+    target.addLegalOp<::mlir::tensor::EmptyOp>();
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
