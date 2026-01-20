@@ -14,9 +14,12 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+#include <climits>
 
 namespace mlir::tt::d2m {
 #define GEN_PASS_DEF_D2MSCALARIZECONSTTENSORS
@@ -174,6 +177,48 @@ static IRMapping buildBlockArgMappingWithoutScalarizedIndices(
   return mapping;
 }
 
+static void updateTensorEmptyResultType(
+    Operation *originalOp, Operation *clonedOp, GenericOp oldGenericOp,
+    GenericOp newGenericOp,
+    const llvm::DenseMap<uint64_t, uint64_t> &operandIndexRemap) {
+  auto tensorEmptyOp = mlir::dyn_cast<mlir::tensor::EmptyOp>(clonedOp);
+  auto originalEmptyOp = mlir::dyn_cast<mlir::tensor::EmptyOp>(originalOp);
+  if (!tensorEmptyOp || !originalEmptyOp) {
+    return;
+  }
+
+  Value associatedOperand = oldGenericOp.findAssocOperand(originalEmptyOp);
+  if (!associatedOperand) {
+    return;
+  }
+
+  // Find the operand index in the old generic op
+  unsigned oldOperandIdx = UINT_MAX;
+  for (unsigned i = 0; i < oldGenericOp->getNumOperands(); ++i) {
+    if (oldGenericOp->getOperand(i) == associatedOperand) {
+      oldOperandIdx = i;
+      break;
+    }
+  }
+
+  auto it = operandIndexRemap.find(oldOperandIdx);
+  if (it == operandIndexRemap.end()) {
+    return;
+  }
+
+  Value newCB = newGenericOp.findAssocCBByOperandIndex(clonedOp, it->second);
+  auto cbType = mlir::dyn_cast<d2m::CBType>(newCB.getType());
+  if (!cbType) {
+    return;
+  }
+
+  auto tensorType =
+      mlir::dyn_cast<RankedTensorType>(cbType.getUnderlying());
+  if (tensorType) {
+    tensorEmptyOp.getResult().setType(tensorType);
+  }
+}
+
 static linalg::GenericOp rebuildLinalgGenericWithoutScalarizedInputs(
     linalg::GenericOp linalgOp, ArrayRef<unsigned> scalarizedInputIndices,
     PatternRewriter &rewriter) {
@@ -243,7 +288,6 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
   }
 
   // Build operand index remapping: old operand index -> new operand index
-  // This is needed to update acquire_buffer operand_index attributes
   llvm::DenseMap<uint64_t, uint64_t> operandIndexRemap;
   unsigned newOperandIdx = 0;
   // Map input operands (skip scalarized ones)
@@ -288,19 +332,9 @@ static GenericOp rebuildD2MGenericWithoutScalarizedInputs(
     rewriter.setInsertionPointToStart(newBlock);
     for (Operation &op : oldBlock->without_terminator()) {
       Operation *clonedOp = rewriter.clone(op, mapping);
-      // Update operand_index attribute for acquire_buffer operations
-      if (auto acquireBufferOp =
-              mlir::dyn_cast<d2m::AcquireBufferOp>(clonedOp)) {
-        if (acquireBufferOp.getOperandIndex().has_value()) {
-          uint64_t oldOperandIdx = acquireBufferOp.getOperandIndex().value();
-          auto it = operandIndexRemap.find(oldOperandIdx);
-          if (it != operandIndexRemap.end()) {
-            uint64_t newOperandIdx = it->second;
-            acquireBufferOp.setOperandIndexAttr(
-                rewriter.getI64IntegerAttr(newOperandIdx));
-          }
-        }
-      }
+      // Update tensor.empty result type to match the associated operand CB
+      updateTensorEmptyResultType(&op, clonedOp, genericOp, newGenericOp,
+                                  operandIndexRemap);
     }
     if (oldBlock->mightHaveTerminator()) {
       rewriter.clone(*oldBlock->getTerminator(), mapping);

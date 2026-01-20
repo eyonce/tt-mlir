@@ -31,7 +31,7 @@ module {
     // CHECK-NEXT:     %{{.*}} = arith.addi %{{.*}}, %{{.*}} : index
     // CHECK-NEXT:     %{{.*}} = arith.addi %{{.*}}, %{{.*}} : index
     // CHECK-NEXT:     %{{.*}} = d2m.remote_load %{{.*}}[%{{.*}}, %{{.*}}] : memref<{{.*}}> -> memref<{{.*}}>
-    // CHECK-NEXT:     %{{.*}} = d2m.acquire_buffer
+    // CHECK-NEXT:     %{{.*}} = memref.alloc
     // CHECK-NEXT:     %{{.*}} = d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] %{{.*}} : memref<{{.*}}>, memref<{{.*}}> -> memref<{{.*}}>
     // CHECK-NEXT:   } {d2m.outer_loop}
     // CHECK-NEXT: } {d2m.outer_loop}
@@ -42,7 +42,7 @@ module {
       %idx0 = d2m.iter_index(0) : index
       %idx1 = d2m.iter_index(1) : index
       %in = d2m.remote_load %stream[%idx0, %idx1] : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #ttcore.view<map(4)>, #dram> -> memref<2x4x!ttcore.tile<32x32, f32>, #l1_>
-      %buffer = d2m.acquire_buffer() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>, #l1_>
+      %buffer = memref.alloc() : memref<2x4x!ttcore.tile<32x32, f32>, #l1_>
       %result = d2m.remote_store %alloc[%idx0, %idx1] %buffer : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #l1_>, memref<2x4x!ttcore.tile<32x32, f32>, #l1_> -> memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #l1_>
     }
     return
@@ -74,7 +74,7 @@ module {
     // CHECK-NEXT:       %{{.*}} = arith.addi %{{.*}}, %{{.*}} : index
     // CHECK-NEXT:       %{{.*}} = d2m.remote_load %{{.*}}[%{{.*}}, %{{.*}}] : memref<{{.*}}> -> memref<{{.*}}>
     // CHECK-NEXT:       %{{.*}} = d2m.remote_load %{{.*}}[%{{.*}}, %{{.*}}] : memref<{{.*}}> -> memref<{{.*}}>
-    // CHECK-NEXT:       %{{.*}} = d2m.acquire_buffer
+    // CHECK-NEXT:       %{{.*}} = memref.alloc
     // CHECK-NEXT:       "d2m.tile_matmul_block"
     // CHECK-NEXT:       %{{.*}} = d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] %{{.*}} : memref<{{.*}}>, memref<{{.*}}> -> memref<{{.*}}>
     // CHECK-NEXT:     } {d2m.outer_loop}
@@ -88,7 +88,7 @@ module {
       %idx1 = d2m.iter_index(1) : index
       %lhs = d2m.remote_load %stream0[%idx0, %idx1] : memref<1x2x2x2x!ttcore.tile<32x32, f32>, #ttcore.shard<8192x4096, 1>, #ttcore.view<map(4)>, #dram> -> memref<2x2x!ttcore.tile<32x32, f32>, #l1_>
       %rhs = d2m.remote_load %stream1[%idx0, %idx1] : memref<2x1x2x2x!ttcore.tile<32x32, f32>, #ttcore.shard<8192x4096, 1>, #ttcore.view<map(4)>, #dram> -> memref<2x2x!ttcore.tile<32x32, f32>, #l1_>
-      %buffer = d2m.acquire_buffer() {operand_index = 2 : i64} : memref<2x2x!ttcore.tile<32x32, f32>, #l1_>
+      %buffer = memref.alloc() : memref<2x2x!ttcore.tile<32x32, f32>, #l1_>
       "d2m.tile_matmul_block"(%lhs, %rhs, %buffer) : (memref<2x2x!ttcore.tile<32x32, f32>, #l1_>, memref<2x2x!ttcore.tile<32x32, f32>, #l1_>, memref<2x2x!ttcore.tile<32x32, f32>, #l1_>) -> ()
       %result = d2m.remote_store %alloc[%idx0, %idx1] %buffer : memref<1x1x2x2x!ttcore.tile<32x32, f32>, #ttcore.shard<8192x4096, 1>, #l1_>, memref<2x2x!ttcore.tile<32x32, f32>, #l1_> -> memref<1x1x2x2x!ttcore.tile<32x32, f32>, #ttcore.shard<8192x4096, 1>, #l1_>
     }

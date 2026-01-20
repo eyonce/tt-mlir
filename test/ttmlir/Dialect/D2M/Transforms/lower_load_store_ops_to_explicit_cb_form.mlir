@@ -237,7 +237,7 @@ module attributes {ttcore.system_desc = #system_desc} {
     return
   }
 
-  // Test full transformation with remote_load, acquire_buffer, and remote_store
+  // Test full transformation with remote_load and remote_store
   // CHECK-LABEL: func.func @test_full_transformation
   // CHECK: d2m.remote_load %{{.*}}[%{{.*}}, %{{.*}}] into %cb0
   // CHECK: %[[IN:.*]] = d2m.wait %cb0

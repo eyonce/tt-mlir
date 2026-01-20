@@ -44,7 +44,7 @@ module attributes {ttcore.system_desc = #system_desc} {
           %1 = arith.addi %core1, %arg4 : index
           %2 = d2m.remote_load %alloc[%0, %1] : memref<4x3x1x1x!ttcore.tile<32x32, f32>, #ttcore.shard<4096x4096, 1>, #l1> -> memref<1x1x!ttcore.tile<32x32, f32>>
           %5 = d2m.remote_load %alloc_0[%0, %1] : memref<4x3x1x1x!ttcore.tile<32x32, f32>, #ttcore.shard<4096x4096, 1>, #l1> -> memref<1x1x!ttcore.tile<32x32, f32>>
-          %buffer = d2m.acquire_buffer() {operand_index = 2 : i64} : memref<1x1x!ttcore.tile<32x32, f32>>
+          %buffer = memref.alloc() : memref<1x1x!ttcore.tile<32x32, f32>>
 
           linalg.generic {
             indexing_maps = [#map, #map, #map],

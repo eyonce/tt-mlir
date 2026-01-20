@@ -55,7 +55,7 @@ module attributes {ttcore.system_desc = #system_desc} {
       %iter1 = d2m.iter_index(1) : index
       // CHECK: d2m.remote_load %[[RHS_STREAM]]
       %1 = d2m.remote_load %view_6[%iter2_11, %iter1] mcast[%c0] : memref<64x64x2x1x!ttcore.tile<32x32, f32>, #ttcore.view<(d0, d1, d2, d3) -> ((d0 * 128 + d2 * 64 + d1) floordiv 1024, (d1 floordiv 8) mod 8, (d0 * 2 + d2 + d1 floordiv 64) mod 16, d1 mod 8)>, #l1> -> memref<2x1x!ttcore.tile<32x32, f32>, #l1>
-      %buffer = d2m.acquire_buffer() {operand_index = 2 : i64} : memref<1x1x!ttcore.tile<32x32, f32>, #l1>
+      %buffer = memref.alloc() : memref<1x1x!ttcore.tile<32x32, f32>, #l1>
       linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>, affine_map<(d0, d1, d2) -> (d2, d1)>, affine_map<(d0, d1, d2) -> (d0, d1)>], iterator_types = ["parallel", "parallel", "reduction"]} ins(%0, %1 : memref<1x2x!ttcore.tile<32x32, f32>, #l1>, memref<2x1x!ttcore.tile<32x32, f32>, #l1>) outs(%buffer : memref<1x1x!ttcore.tile<32x32, f32>, #l1>) {
       ^bb0(%in: !ttcore.tile<32x32, f32>, %in_14: !ttcore.tile<32x32, f32>, %out: !ttcore.tile<32x32, f32>):
         %3 = "d2m.tile_matmul"(%in, %in_14, %out) : (!ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32>

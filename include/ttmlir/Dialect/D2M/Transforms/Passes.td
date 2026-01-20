@@ -851,7 +851,7 @@ def D2MLowerLoadStoreOpsToExplicitCBForm : Pass<"d2m-lower-load-store-ops-to-exp
   let summary = "Lower load/store operations to explicit CB form.";
   let description = [{
     This pass converts remote_load and remote_store operations from implicit form
-    to explicit CB form, and converts acquire_buffer to reserve operations.
+    to explicit CB form.
   }];
   let dependentDialects = ["::mlir::tt::d2m::D2MDialect"];
 }

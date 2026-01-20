@@ -91,8 +91,7 @@ static Value findAssociatedCB(Operation *op, Value memrefOperand) {
 
 
 // Helper function to find the ReserveOp that produces a given value,
-// potentially through a chain of operations. This is used after we've
-// converted AcquireBufferOp to ReserveOp to find the associated CB.
+// potentially through a chain of operations.
 static ReserveOp findReserveOp(Value value) {
   if (!value) {
     return nullptr;
@@ -225,9 +224,8 @@ struct PushPopInfo {
   SmallVector<std::pair<ReserveOp, Value>> reserveOpsNeedingPush;
 };
 
-// Pass A: Convert all remote_load and remote_store into explicit CB form,
-// and convert acquire_buffer to reserve op. Returns information needed for
-// push/pop insertion.
+// Pass A: Convert all remote_load and remote_store into explicit CB form.
+// Returns information needed for push/pop insertion.
 static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
                                            IRRewriter &rewriter) {
   PushPopInfo info;
@@ -479,8 +477,7 @@ public:
     ModuleOp moduleOp = getOperation();
     IRRewriter rewriter(&getContext());
 
-    // Pass A: Convert all remote_load and remote_store into explicit CB form,
-    // and convert acquire_buffer to reserve op
+    // Pass A: Convert all remote_load and remote_store into explicit CB form
     PushPopInfo info = convertToExplicitCBForm(moduleOp, rewriter);
 
     // Pass B: Insert push and pop operations
