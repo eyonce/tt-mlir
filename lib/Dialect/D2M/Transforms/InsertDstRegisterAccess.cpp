@@ -555,30 +555,17 @@ public:
     if (auto *definingOp = memref.getDefiningOp()) {
       if (mlir::isa<d2m::WaitOp, d2m::ReserveOp>(definingOp)) {
         memref = definingOp->getOperand(0);
-      } else if (auto acquireBufferOp =
-                     mlir::dyn_cast<d2m::AcquireBufferOp>(definingOp)) {
-        // AcquireBufferOp has an operand_index attribute that indicates which
-        // block argument (CB) this buffer corresponds to. We need to find that
-        // block argument from the parent GenericOp's region.
-        auto operandIndex = acquireBufferOp.getOperandIndex();
-        assert(operandIndex.has_value() &&
-               "AcquireBufferOp must have operand_index attribute");
-        GenericOp generic = acquireBufferOp->getParentOfType<GenericOp>();
-        assert(generic && "AcquireBufferOp must be nested in a GenericOp");
-        Region *genericRegion = nullptr;
-        if (generic.getNumRegions() == 1) {
-          genericRegion = &generic.getRegion(0);
-        } else {
-          genericRegion = ttmlir::utils::getRegionWithParentOfType<GenericOp>(
-              acquireBufferOp);
+      } else if (auto allocOp =
+                     mlir::dyn_cast<memref::AllocOp>(definingOp)) {
+        // memref.alloc: find the associated operand by tracing uses, then
+        // find the corresponding CB block argument
+        Value assocOperand = GenericOp::findAssocOperand(allocOp);
+        if (!assocOperand) {
+          return nullptr;
         }
-        assert(genericRegion && !genericRegion->empty() &&
-               "GenericOp must have a non-empty region");
-        Block *threadBlock = &genericRegion->front();
-        assert(threadBlock->getNumArguments() > operandIndex.value() &&
-               "operand_index exceeds number of block arguments");
-        return mlir::cast<BlockArgument>(
-            threadBlock->getArgument(operandIndex.value()));
+        Value cb = GenericOp::findAssocCBByOperand(allocOp.getOperation(),
+                                                   assocOperand);
+        return mlir::dyn_cast<BlockArgument>(cb);
       }
     }
     return mlir::dyn_cast<BlockArgument>(memref);

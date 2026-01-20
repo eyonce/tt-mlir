@@ -15,6 +15,7 @@
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -2168,6 +2169,85 @@ bool d2m::GenericOp::isNontriviallyEltwiseFused() {
   }
 
   return true;
+}
+
+Value d2m::GenericOp::findAssocOperand(memref::AllocOp allocOp) {
+  // First check that the memref.alloc is within a generic op
+  GenericOp genericOp = allocOp->getParentOfType<GenericOp>();
+  if (!genericOp) {
+    return Value();
+  }
+
+  // Assert that the parent GenericOp has a single output
+  int64_t numOutputs = static_cast<int64_t>(genericOp.getOutputs().size());
+  TT_assertv(numOutputs == 1,
+             "memref.alloc within generic op with multiple outputs - "
+             "cannot determine associated operand");
+
+  // By default, assume the associated operand is the sole output operand
+  Value associatedOperand = genericOp.getOutputs()[0];
+
+  // If one of the uses is a RemoteStoreOp, the associated operand is
+  // the memref of the RemoteStoreOp
+  Value allocResult = allocOp.getResult();
+  for (Operation *userOp : allocResult.getUsers()) {
+    if (auto storeOp = mlir::dyn_cast<RemoteStoreOp>(userOp)) {
+      associatedOperand = storeOp.getMemref();
+      break;
+    }
+  }
+
+  return associatedOperand;
+}
+
+Value d2m::GenericOp::findAssocCBByOperandIndex(Operation *op,
+                                                 unsigned operandIndex) {
+  GenericOp generic = op->getParentOfType<GenericOp>();
+  if (!generic) {
+    return Value();
+  }
+
+  // Find the generic op's thread region that contains this operation
+  Region *genericRegion = nullptr;
+  if (generic.getNumRegions() == 1) {
+    genericRegion = &generic.getRegion(0);
+  } else {
+    genericRegion = ttmlir::utils::getRegionWithParentOfType<GenericOp>(op);
+  }
+
+  if (!genericRegion || genericRegion->empty()) {
+    return Value();
+  }
+
+  Block *threadBlock = &genericRegion->front();
+
+  if (threadBlock->getNumArguments() > operandIndex) {
+    return threadBlock->getArgument(operandIndex);
+  }
+
+  return Value();
+}
+
+Value d2m::GenericOp::findAssocCBByOperand(Operation *op, Value operand) {
+  GenericOp generic = op->getParentOfType<GenericOp>();
+  if (!generic) {
+    return Value();
+  }
+
+  // Find which operand index this corresponds to
+  unsigned operandIndex = UINT_MAX;
+  for (unsigned i = 0; i < generic->getNumOperands(); ++i) {
+    if (generic->getOperand(i) == operand) {
+      operandIndex = i;
+      break;
+    }
+  }
+
+  if (operandIndex == UINT_MAX) {
+    return Value();
+  }
+
+  return findAssocCBByOperandIndex(op, operandIndex);
 }
 
 } // namespace mlir::tt::d2m

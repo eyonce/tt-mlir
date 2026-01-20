@@ -20,37 +20,6 @@ namespace mlir::tt::d2m {
 
 namespace {
 
-// Helper function to find the associated generic op operand for a given
-// memref.alloc by tracing its uses. Returns std::nullopt if the tracing
-// encounters a pattern that cannot be analyzed.
-static std::optional<Value> findAssocOperand(memref::AllocOp allocOp) {
-  // First check that the memref.alloc is within a generic op
-  GenericOp genericOp = allocOp->getParentOfType<GenericOp>();
-  if (!genericOp) {
-    return std::nullopt;
-  }
-  
-  // Assert that the parent GenericOp has a single output
-  int64_t numOutputs = static_cast<int64_t>(genericOp.getOutputs().size());
-  TT_assertv(numOutputs == 1,
-             "memref.alloc within generic op with multiple outputs - "
-             "cannot determine associated operand");
-  
-  // By default, assume the associated operand is the sole output operand
-  Value associatedOperand = genericOp.getOutputs()[0];
-  
-  // If one of the uses is a RemoteStoreOp, the associated operand is
-  // the memref of the RemoteStoreOp
-  Value allocResult = allocOp.getResult();
-  for (Operation *userOp : allocResult.getUsers()) {
-    if (auto storeOp = mlir::dyn_cast<RemoteStoreOp>(userOp)) {
-      associatedOperand = storeOp.getMemref();
-      break;
-    }
-  }
-  
-  return associatedOperand;
-}
 
 // Helper function to check if an operand is remote (i.e., comes from a stream
 // op, or is used in a DMA-only GenericOp where all operands are considered
@@ -120,56 +89,6 @@ static Value findAssociatedCB(Operation *op, Value memrefOperand) {
   return Value();
 }
 
-// Helper function to find the CB block argument by operand index directly
-static Value findCBByOperandIndex(Operation *op, unsigned operandIndex) {
-  GenericOp generic = op->getParentOfType<GenericOp>();
-  if (!generic) {
-    return Value();
-  }
-
-  // Find the generic op's thread region that contains this operation
-  Region *genericRegion = nullptr;
-  if (generic.getNumRegions() == 1) {
-    genericRegion = &generic.getRegion(0);
-  } else {
-    genericRegion = ttmlir::utils::getRegionWithParentOfType<GenericOp>(op);
-  }
-
-  if (!genericRegion || genericRegion->empty()) {
-    return Value();
-  }
-
-  Block *threadBlock = &genericRegion->front();
-
-  if (threadBlock->getNumArguments() > operandIndex) {
-    return threadBlock->getArgument(operandIndex);
-  }
-
-  return Value();
-}
-
-// Helper function to find the CB block argument for a given operand value
-static Value findCBByOperand(Operation *op, Value operand) {
-  GenericOp generic = op->getParentOfType<GenericOp>();
-  if (!generic) {
-    return Value();
-  }
-
-  // Find which operand index this corresponds to
-  unsigned operandIndex = UINT_MAX;
-  for (unsigned i = 0; i < generic->getNumOperands(); ++i) {
-    if (generic->getOperand(i) == operand) {
-      operandIndex = i;
-      break;
-    }
-  }
-
-  if (operandIndex == UINT_MAX) {
-    return Value();
-  }
-
-  return findCBByOperandIndex(op, operandIndex);
-}
 
 // Helper function to find the ReserveOp that produces a given value,
 // potentially through a chain of operations. This is used after we've
@@ -375,13 +294,13 @@ static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
     }
 
     // Use findAssocOperand to determine the associated generic operand
-    std::optional<Value> assocOperand = findAssocOperand(allocOp);
-    if (!assocOperand.has_value()) {
+    Value assocOperand = GenericOp::findAssocOperand(allocOp);
+    if (!assocOperand) {
       return;
     }
 
     // Check if the associated operand is remote
-    if (!isRemoteOperand(*assocOperand, allocOp.getOperation())) {
+    if (!isRemoteOperand(assocOperand, allocOp.getOperation())) {
       return;
     }
 
@@ -393,15 +312,16 @@ static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
     Location loc = allocOp.getLoc();
     
     // Find the associated operand
-    std::optional<Value> assocOperand = findAssocOperand(allocOp);
-    if (!assocOperand.has_value()) {
+    Value assocOperand = GenericOp::findAssocOperand(allocOp);
+    if (!assocOperand) {
       allocOp.emitWarning(
           "could not determine associated operand, skipping conversion");
       continue;
     }
 
     // Find the CB for the associated operand
-    Value assocCb = findCBByOperand(allocOp.getOperation(), *assocOperand);
+    Value assocCb =
+        GenericOp::findAssocCBByOperand(allocOp.getOperation(), assocOperand);
     if (!assocCb) {
       allocOp.emitWarning(
           "could not find associated CB block argument, skipping conversion");
