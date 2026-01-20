@@ -196,7 +196,7 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   pm.addPass(memref::createFoldMemRefAliasOpsPass());
   pm.addPass(mlir::createLowerAffinePass());
   pm.addPass(d2m::createD2MGenericLinearizeMemref());
-  // GenericLinearizeMemref generates affine apply ops that must be lowered here 
+  // GenericLinearizeMemref generates affine apply ops that must be lowered here
   pm.addPass(mlir::createLowerAffinePass());
 
   // Frontend of DMA lowering pipeline; lower abstract

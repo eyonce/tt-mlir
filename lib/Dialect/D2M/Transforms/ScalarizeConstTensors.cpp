@@ -212,8 +212,7 @@ static void updateTensorEmptyResultType(
     return;
   }
 
-  auto tensorType =
-      mlir::dyn_cast<RankedTensorType>(cbType.getUnderlying());
+  auto tensorType = mlir::dyn_cast<RankedTensorType>(cbType.getUnderlying());
   if (tensorType) {
     tensorEmptyOp.getResult().setType(tensorType);
   }

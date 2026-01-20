@@ -974,15 +974,16 @@ recreateGenericOp(d2m::GenericOp genericOp,
               }
             } else if (auto tensorEmptyOp =
                            llvm::dyn_cast<mlir::tensor::EmptyOp>(clonedOp)) {
-              // Update tensor.empty result type to match the associated operand CB
-              // Use the original operation (&op) to find the associated operand and CB
-              // from the old generic op
+              // Update tensor.empty result type to match the associated operand
+              // CB Use the original operation (&op) to find the associated
+              // operand and CB from the old generic op.
               if (auto originalEmptyOp =
                       mlir::dyn_cast<mlir::tensor::EmptyOp>(&op)) {
                 Value associatedOperand =
                     d2m::GenericOp::findAssocOperand(originalEmptyOp);
                 if (associatedOperand) {
-                  // Find the CB block argument associated with this operand in the old generic
+                  // Find the CB block argument associated with this operand in
+                  // the old generic.
                   Value oldCB = d2m::GenericOp::findAssocCBByOperand(
                       &op, associatedOperand);
                   if (oldCB) {

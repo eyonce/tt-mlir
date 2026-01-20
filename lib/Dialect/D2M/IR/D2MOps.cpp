@@ -2230,7 +2230,7 @@ Value d2m::GenericOp::findAssocOperand(mlir::tensor::EmptyOp emptyOp) {
 }
 
 Value d2m::GenericOp::findAssocCBByOperandIndex(Operation *op,
-                                                 unsigned operandIndex) {
+                                                unsigned operandIndex) {
   GenericOp generic = op->getParentOfType<GenericOp>();
   if (!generic) {
     return Value();

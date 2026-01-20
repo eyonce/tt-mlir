@@ -391,28 +391,28 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
         region.walk([&](memref::AllocOp allocOp) {
           // First remap the alloc to L1
           remap(rewriter, allocOp, MemorySpace::DeviceL1);
-          
+
           // Get the result type of the alloc
           Value allocResult = allocOp.getResult();
           MemRefType allocType = mlir::cast<MemRefType>(allocResult.getType());
-          
+
           // Trace uses of the alloc result to find compute ops
           llvm::SmallVector<Operation *> worklist;
           llvm::DenseSet<Operation *> visited;
-          
+
           // Initialize worklist with direct users
           for (Operation *user : allocResult.getUsers()) {
             worklist.push_back(user);
           }
-          
+
           // Process the worklist to trace through all uses
           while (!worklist.empty()) {
             Operation *op = worklist.pop_back_val();
-            
+
             if (!visited.insert(op).second) {
               continue; // Already visited
             }
-            
+
             // Check if this is a compute operation with results
             if (op->getNumResults() > 0) {
               // Update result types for operations that produce values
@@ -424,7 +424,7 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
                   }
                 }
               });
-              
+
               // Continue tracing through this operation's results
               for (OpResult result : op->getResults()) {
                 for (Operation *userOp : result.getUsers()) {

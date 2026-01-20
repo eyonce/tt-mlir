@@ -20,7 +20,6 @@ namespace mlir::tt::d2m {
 
 namespace {
 
-
 // Helper function to check if an operand is remote (i.e., comes from a stream
 // op, or is used in a DMA-only GenericOp where all operands are considered
 // remote)
@@ -85,10 +84,8 @@ static Value findAssociatedCB(Operation *op, Value memrefOperand) {
   if (threadBlock->getNumArguments() > operandIndex) {
     return threadBlock->getArgument(operandIndex);
   }
-
   return Value();
 }
-
 
 // Helper function to find the ReserveOp that produces a given value,
 // potentially through a chain of operations.
@@ -308,7 +305,7 @@ static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
   // Transform each memref.alloc to reserve
   for (memref::AllocOp allocOp : allocsToConvert) {
     Location loc = allocOp.getLoc();
-    
+
     // Find the associated operand
     Value assocOperand = GenericOp::findAssocOperand(allocOp);
     if (!assocOperand) {
@@ -333,8 +330,7 @@ static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
     auto reserveOp = rewriter.create<ReserveOp>(loc, assocCb);
 
     // Replace all uses of memref.alloc result with reserve result
-    rewriter.replaceAllUsesWith(allocOp.getResult(),
-                                reserveOp.getResult());
+    rewriter.replaceAllUsesWith(allocOp.getResult(), reserveOp.getResult());
 
     // Track reserve op for push insertion (deferred to Pass B)
     info.reserveOpsNeedingPush.push_back({reserveOp, assocCb});
