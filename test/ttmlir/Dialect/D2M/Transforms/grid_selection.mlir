@@ -40,10 +40,10 @@ module {
       grid = #ttcore.grid<1x1>,
       indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>],
       iterator_types = [#ttcore.iterator_type<parallel>, #ttcore.iterator_type<parallel>],
-      threads = [#d2m.thread<compute>]
+      threads = [#d2m.thread<unified>]
     }
     ins() outs(%0 : tensor<1x1x8x8x!ttcore.tile<32x32, f32>, #layout>)  {
-    ^compute0(%cb_out: !d2m.cb<tensor<8x8x!ttcore.tile<32x32, f32>>>):
+    ^unified0(%cb_out: !d2m.cb<tensor<8x8x!ttcore.tile<32x32, f32>>>):
       %out = d2m.reserve %cb_out : <tensor<8x8x!ttcore.tile<32x32, f32>>> -> tensor<8x8x!ttcore.tile<32x32, f32>>
       d2m.yield %out : (tensor<8x8x!ttcore.tile<32x32, f32>>)
     } : tensor<1x1x8x8x!ttcore.tile<32x32, f32>, #layout>
@@ -79,12 +79,12 @@ module {
       grid = #ttcore.grid<1x1>,
       indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>],
       iterator_types = [#ttcore.iterator_type<parallel>, #ttcore.iterator_type<parallel>],
-      threads = [#d2m.thread<compute>]
+      threads = [#d2m.thread<unified>]
     }
     ins()
     outs(%stream : tensor<1x1x1x64x!ttcore.tile<32x32, f32>, #layout_stream2>)  {
 
-    ^compute0(%cb_out: !d2m.cb<tensor<1x64x!ttcore.tile<32x32, f32>>>):
+    ^unified0(%cb_out: !d2m.cb<tensor<1x64x!ttcore.tile<32x32, f32>>>):
       %out = d2m.reserve %cb_out : <tensor<1x64x!ttcore.tile<32x32, f32>>> -> tensor<1x64x!ttcore.tile<32x32, f32>>
       d2m.yield %out : (tensor<1x64x!ttcore.tile<32x32, f32>>)
     } : tensor<1x1x1x64x!ttcore.tile<32x32, f32>, #layout_stream2>
