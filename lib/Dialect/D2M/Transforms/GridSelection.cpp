@@ -13,6 +13,7 @@
 #include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttmlir/Dialect/TTIR/IR/TTIROps.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -971,25 +972,41 @@ recreateGenericOp(d2m::GenericOp genericOp,
                     remoteStoreOp.getMemref().getType());
                 remoteStoreOp.getResult().setType(tensorType);
               }
-            } else if (auto acquireBufferOp =
-                           llvm::dyn_cast<d2m::AcquireBufferOp>(clonedOp)) {
-              // Update acquire_buffer result type to match the reblocked grid
-              // The operand_index attribute tells us which generic operand this
-              // corresponds to
-              if (acquireBufferOp.getOperandIndex().has_value()) {
-                auto operandIdx = acquireBufferOp.getOperandIndex().value();
-                if (operandIdx < newOperands.size()) {
-                  auto operandType = newOperands[operandIdx].getType();
-                  if (auto tensorType =
-                          mlir::dyn_cast<RankedTensorType>(operandType)) {
-                    auto deviceLayout =
-                        ttcore::getDeviceLayout(newOperands[operandIdx]);
-                    if (deviceLayout) {
-                      auto shardShape = deviceLayout.getShardShape(tensorType);
-                      auto elementType = tensorType.getElementType();
-                      auto shardType =
-                          RankedTensorType::get(shardShape, elementType);
-                      acquireBufferOp.getResult().setType(shardType);
+            } else if (auto tensorEmptyOp =
+                           llvm::dyn_cast<mlir::tensor::EmptyOp>(clonedOp)) {
+              // Update tensor.empty result type to match the associated operand CB
+              // Use the original operation (&op) to find the associated operand and CB
+              // from the old generic op
+              if (auto originalEmptyOp =
+                      mlir::dyn_cast<mlir::tensor::EmptyOp>(&op)) {
+                Value associatedOperand =
+                    d2m::GenericOp::findAssocOperand(originalEmptyOp);
+                if (associatedOperand) {
+                  // Find the CB block argument associated with this operand in the old generic
+                  Value oldCB = d2m::GenericOp::findAssocCBByOperand(
+                      &op, associatedOperand);
+                  if (oldCB) {
+                    // Find the index of the old CB in the old block arguments
+                    auto oldBlockArgs = oldBlock.getArguments();
+                    unsigned cbIndex = UINT_MAX;
+                    for (unsigned i = 0; i < oldBlockArgs.size(); ++i) {
+                      if (oldBlockArgs[i] == oldCB) {
+                        cbIndex = i;
+                        break;
+                      }
+                    }
+                    // Use the index to get the new CB from blockArgs
+                    if (cbIndex != UINT_MAX && cbIndex < blockArgs.size()) {
+                      Value newCB = blockArgs[cbIndex];
+                      // Extract the tensor type from the CB type
+                      if (auto cbType =
+                              mlir::dyn_cast<d2m::CBType>(newCB.getType())) {
+                        auto underlyingType = cbType.getUnderlying();
+                        if (auto tensorType = mlir::dyn_cast<RankedTensorType>(
+                                underlyingType)) {
+                          tensorEmptyOp.getResult().setType(tensorType);
+                        }
+                      }
                     }
                   }
                 }
