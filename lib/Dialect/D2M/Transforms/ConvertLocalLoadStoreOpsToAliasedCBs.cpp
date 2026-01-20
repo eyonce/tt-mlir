@@ -8,6 +8,7 @@
 #include "ttmlir/Dialect/D2M/IR/D2MOps.h"
 #include "ttmlir/Utils.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 
 namespace mlir::tt::d2m {
@@ -114,10 +115,10 @@ static Operation *findLastUse(Value value, Block *block) {
   return lastUse;
 }
 
-// Helper function to find the acquire_buffer operation that produces a given
-// value, potentially through a chain of operations. Returns the acquire_buffer
-// op if found, null otherwise.
-static AcquireBufferOp findAcquireBuffer(Value value) {
+// Helper function to find the memref.alloc operation that produces a given
+// value, potentially through a chain of operations. Returns the alloc op if
+// found, null otherwise.
+static memref::AllocOp findAllocOp(Value value) {
   if (!value) {
     return nullptr;
   }
@@ -127,16 +128,16 @@ static AcquireBufferOp findAcquireBuffer(Value value) {
     return nullptr;
   }
 
-  // Direct case: value is directly produced by acquire_buffer
-  if (auto acquireBufferOp = mlir::dyn_cast<AcquireBufferOp>(definingOp)) {
-    return acquireBufferOp;
+  // Direct case: value is directly produced by memref.alloc
+  if (auto allocOp = mlir::dyn_cast<memref::AllocOp>(definingOp)) {
+    return allocOp;
   }
 
   // Trace through operations that might pass the buffer through
   // (e.g., view-like ops, cast ops, etc.)
   for (Value operand : definingOp->getOperands()) {
-    if (auto acquireBufferOp = findAcquireBuffer(operand)) {
-      return acquireBufferOp;
+    if (auto allocOp = findAllocOp(operand)) {
+      return allocOp;
     }
   }
 
@@ -255,22 +256,21 @@ public:
         continue;
       }
 
-      // Find the acquire_buffer that produces the local buffer being stored
-      AcquireBufferOp acquireBufferOp = findAcquireBuffer(localBuffer);
+      // Find the memref.alloc that produces the local buffer being stored
+      memref::AllocOp allocOp = findAllocOp(localBuffer);
 
-      if (!acquireBufferOp) {
+      if (!allocOp) {
         remoteStore.emitWarning(
-            "could not find acquire_buffer for local buffer operand, skipping "
+            "could not find memref.alloc for local buffer operand, skipping "
             "conversion");
         continue;
       }
 
-      // Replace acquire_buffer with reserve
-      rewriter.setInsertionPoint(acquireBufferOp);
+      // Replace memref.alloc with reserve
+      rewriter.setInsertionPoint(allocOp);
       auto reserveOp = rewriter.create<ReserveOp>(loc, assocCb);
-      rewriter.replaceAllUsesWith(acquireBufferOp.getResult(),
-                                  reserveOp.getResult());
-      rewriter.eraseOp(acquireBufferOp);
+      rewriter.replaceAllUsesWith(allocOp.getResult(), reserveOp.getResult());
+      rewriter.eraseOp(allocOp);
 
       // At remote_store location, insert: push, wait, pop
       rewriter.setInsertionPoint(remoteStore);
