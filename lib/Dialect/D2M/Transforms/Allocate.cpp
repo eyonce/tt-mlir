@@ -342,6 +342,10 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
 
     FuncAnalysisData analysis;
 
+    if (failed(remapGenericRegionAllocs(funcOp))) {
+      return failure();
+    }
+
     if (failed(analyzeLiveness(funcOp, analysis))) {
       return failure();
     }
@@ -369,6 +373,69 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
     if (failed(insertDeallocs(funcOp, analysis))) {
       return failure();
     }
+
+    return success();
+  }
+
+  /// Walk all GenericOp operations and remap any memref.alloc operations
+  /// inside their regions to L1 memory space. Also trace the uses of each
+  /// alloc to find compute operations and update their result types to match
+  /// the alloc's memref type.
+  ///
+  LogicalResult remapGenericRegionAllocs(func::FuncOp funcOp) {
+    IRRewriter rewriter(funcOp->getContext());
+    Block &funcBody = funcOp.getBody().front();
+
+    funcBody.walk([&](d2m::GenericOp genericOp) {
+      for (Region &region : genericOp->getRegions()) {
+        region.walk([&](memref::AllocOp allocOp) {
+          // First remap the alloc to L1
+          remap(rewriter, allocOp, MemorySpace::DeviceL1);
+          
+          // Get the result type of the alloc
+          Value allocResult = allocOp.getResult();
+          MemRefType allocType = mlir::cast<MemRefType>(allocResult.getType());
+          
+          // Trace uses of the alloc result to find compute ops
+          llvm::SmallVector<Operation *> worklist;
+          llvm::DenseSet<Operation *> visited;
+          
+          // Initialize worklist with direct users
+          for (Operation *user : allocResult.getUsers()) {
+            worklist.push_back(user);
+          }
+          
+          // Process the worklist to trace through all uses
+          while (!worklist.empty()) {
+            Operation *op = worklist.pop_back_val();
+            
+            if (!visited.insert(op).second) {
+              continue; // Already visited
+            }
+            
+            // Check if this is a compute operation with results
+            if (op->getNumResults() > 0) {
+              // Update result types for operations that produce values
+              rewriter.modifyOpInPlace(op, [&]() {
+                for (OpResult result : op->getResults()) {
+                  // Only update if the result is a memref type
+                  if (mlir::isa<MemRefType>(result.getType())) {
+                    result.setType(allocType);
+                  }
+                }
+              });
+              
+              // Continue tracing through this operation's results
+              for (OpResult result : op->getResults()) {
+                for (Operation *userOp : result.getUsers()) {
+                  worklist.push_back(userOp);
+                }
+              }
+            }
+          }
+        });
+      }
+    });
 
     return success();
   }
@@ -416,6 +483,12 @@ class D2MAllocate final : public impl::D2MAllocateBase<D2MAllocate> {
 
       if (llvm::isa<memref::AllocOp, d2m::ViewLayoutOp, d2m::StreamLayoutOp>(
               op)) {
+        // Skip memref.alloc operations that have a genericOp as parent
+        if (llvm::isa<memref::AllocOp>(op) &&
+            llvm::isa<d2m::GenericOp>(op->getParentOp())) {
+          return;
+        }
+
         TT_assert(op->getNumResults() == 1u);
         Value result = op->getResult(0);
 
