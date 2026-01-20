@@ -120,7 +120,7 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
         options.maxDstPhysicalSizeTiles;
   }
   pm.addPass(d2m::createD2MElementwiseFusion(elementwiseFusionOptions));
-  // pm.addPass(createLinalgElementwiseOpFusionPass());
+  pm.addPass(createLinalgElementwiseOpFusionPass());
   pm.addPass(mlir::createCanonicalizerPass());
   if (options.ttnnMode) {
     bufferization::OneShotBufferizePassOptions bufferizePassOptions;
@@ -196,6 +196,8 @@ void createTTIRToTTMetalUnifiedMiddleendPipeline(
   pm.addPass(memref::createFoldMemRefAliasOpsPass());
   pm.addPass(mlir::createLowerAffinePass());
   pm.addPass(d2m::createD2MGenericLinearizeMemref());
+  // GenericLinearizeMemref generates affine apply ops that must be lowered here 
+  pm.addPass(mlir::createLowerAffinePass());
 
   // Frontend of DMA lowering pipeline; lower abstract
   // remote loads and stores to explicit CB form split the
