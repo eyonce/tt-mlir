@@ -113,8 +113,8 @@ module attributes {ttcore.system_desc = #system_desc} {
         scf.for %arg4 = %c0 to %c1 step %c1 {
           %0 = arith.addi %core0, %arg3 : index
           %1 = arith.addi %core1, %arg4 : index
-          // acquire_buffer with operand_index pointing to remote output operand
-          %buffer = d2m.acquire_buffer() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
+          // memref.alloc with operand_index pointing to remote output operand
+          %buffer = memref.alloc() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
 
           // Simple operation using the buffer
           affine.for %i = 0 to 2 {
@@ -269,8 +269,8 @@ module attributes {ttcore.system_desc = #system_desc} {
           // Implicit remote_load
           %in = d2m.remote_load %stream_in[%0, %1] : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #ttcore.view<map(4)>, #dram> -> memref<2x4x!ttcore.tile<32x32, f32>>
 
-          // acquire_buffer for output
-          %buffer = d2m.acquire_buffer() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
+          // memref.alloc for output
+          %buffer = memref.alloc() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
 
           linalg.generic {
             indexing_maps = [#map, #map],
@@ -292,7 +292,7 @@ module attributes {ttcore.system_desc = #system_desc} {
 
   // Test based on dma.mlir: multiple generic ops with remote_store and remote_load
   // CHECK-LABEL: func.func @dram_write
-  // Verify acquire_buffer converted to reserve
+  // Verify memref.alloc with operand_index converted to reserve
   // CHECK: d2m.reserve %cb{{[01]}}
   // Verify remote_store in explicit CB form
   // CHECK: d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] from %cb{{[01]}}
@@ -313,7 +313,7 @@ module attributes {ttcore.system_desc = #system_desc} {
     ^unified0(%cb0: !d2m.cb<memref<128x128xf32, #l1>>, %cb1: !d2m.cb<memref<128x128xf32, #l1>>):
       %core0 = d2m.core_index(0) {phys_to_virt_map = affine_map<() -> ()>} : index
       %core1 = d2m.core_index(1) {phys_to_virt_map = affine_map<() -> ()>} : index
-      %buffer = d2m.acquire_buffer() {operand_index = 1 : i64} : memref<128x128xf32>
+      %buffer = memref.alloc() {operand_index = 1 : i64} : memref<128x128xf32>
       d2m.remote_store %view[%core0, %core1] %buffer : memref<1x1x128x128xf32, #ttcore.view<map(4)>, #dram>, memref<128x128xf32> -> memref<1x1x128x128xf32, #ttcore.view<map(4)>, #dram>
     }
     memref.dealloc %alloc : memref<1x1x128x128xf32, #ttcore.shard<512x4, 1>, #l1>
@@ -404,8 +404,8 @@ module attributes {ttcore.system_desc = #system_desc} {
         scf.for %arg4 = %c0 to %c1 step %c1 {
           %0 = arith.addi %core0, %arg3 : index
           %1 = arith.addi %core1, %arg4 : index
-          // acquire_buffer with operand_index pointing to remote output operand
-          %buffer = d2m.acquire_buffer() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
+          // memref.alloc with operand_index pointing to remote output operand
+          %buffer = memref.alloc() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
 
           // Simple operation using the buffer
           affine.for %i = 0 to 2 {

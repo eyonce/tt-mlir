@@ -4,10 +4,12 @@
 
 #include "ttmlir/Dialect/D2M/Transforms/Passes.h"
 
+#include "ttmlir/Asserts.h"
 #include "ttmlir/Dialect/D2M/IR/D2MGenericRegionOps.h"
 #include "ttmlir/Dialect/D2M/IR/D2MOps.h"
 #include "ttmlir/Utils.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -17,6 +19,38 @@ namespace mlir::tt::d2m {
 #include "ttmlir/Dialect/D2M/Transforms/Passes.h.inc"
 
 namespace {
+
+// Helper function to find the associated generic op operand for a given
+// memref.alloc by tracing its uses. Returns std::nullopt if the tracing
+// encounters a pattern that cannot be analyzed.
+static std::optional<Value> findAssocOperand(memref::AllocOp allocOp) {
+  // First check that the memref.alloc is within a generic op
+  GenericOp genericOp = allocOp->getParentOfType<GenericOp>();
+  if (!genericOp) {
+    return std::nullopt;
+  }
+  
+  // Assert that the parent GenericOp has a single output
+  int64_t numOutputs = static_cast<int64_t>(genericOp.getOutputs().size());
+  TT_assertv(numOutputs == 1,
+             "memref.alloc within generic op with multiple outputs - "
+             "cannot determine associated operand");
+  
+  // By default, assume the associated operand is the sole output operand
+  Value associatedOperand = genericOp.getOutputs()[0];
+  
+  // If one of the uses is a RemoteStoreOp, the associated operand is
+  // the memref of the RemoteStoreOp
+  Value allocResult = allocOp.getResult();
+  for (Operation *userOp : allocResult.getUsers()) {
+    if (auto storeOp = mlir::dyn_cast<RemoteStoreOp>(userOp)) {
+      associatedOperand = storeOp.getMemref();
+      break;
+    }
+  }
+  
+  return associatedOperand;
+}
 
 // Helper function to check if an operand is remote (i.e., comes from a stream
 // op, or is used in a DMA-only GenericOp where all operands are considered
@@ -112,6 +146,29 @@ static Value findCBByOperandIndex(Operation *op, unsigned operandIndex) {
   }
 
   return Value();
+}
+
+// Helper function to find the CB block argument for a given operand value
+static Value findCBByOperand(Operation *op, Value operand) {
+  GenericOp generic = op->getParentOfType<GenericOp>();
+  if (!generic) {
+    return Value();
+  }
+
+  // Find which operand index this corresponds to
+  unsigned operandIndex = UINT_MAX;
+  for (unsigned i = 0; i < generic->getNumOperands(); ++i) {
+    if (generic->getOperand(i) == operand) {
+      operandIndex = i;
+      break;
+    }
+  }
+
+  if (operandIndex == UINT_MAX) {
+    return Value();
+  }
+
+  return findCBByOperandIndex(op, operandIndex);
 }
 
 // Helper function to find the ReserveOp that produces a given value,
@@ -308,61 +365,64 @@ static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
     rewriter.eraseOp(remoteLoad);
   }
 
-  // Convert AcquireBufferOp -> ReserveOp
-  SmallVector<AcquireBufferOp> acquireBuffersToConvert;
-  moduleOp->walk([&](AcquireBufferOp acquireBuffer) {
-    // Check if it has an operand_index attribute
-    if (!acquireBuffer.getOperandIndex().has_value()) {
-      return;
-    }
-
-    unsigned operandIndex = acquireBuffer.getOperandIndex().value();
-    GenericOp generic = acquireBuffer->getParentOfType<GenericOp>();
+  // Convert memref.alloc -> ReserveOp for remote operands
+  SmallVector<memref::AllocOp> allocsToConvert;
+  moduleOp->walk([&](memref::AllocOp allocOp) {
+    // Check if this alloc is inside a generic op
+    GenericOp generic = allocOp->getParentOfType<GenericOp>();
     if (!generic) {
       return;
     }
 
-    // Check if the corresponding generic operand is remote
-    if (operandIndex >= generic->getNumOperands()) {
+    // Use findAssocOperand to determine the associated generic operand
+    std::optional<Value> assocOperand = findAssocOperand(allocOp);
+    if (!assocOperand.has_value()) {
       return;
     }
 
-    Value genericOperand = generic->getOperand(operandIndex);
-    if (!isRemoteOperand(genericOperand, acquireBuffer.getOperation())) {
+    // Check if the associated operand is remote
+    if (!isRemoteOperand(*assocOperand, allocOp.getOperation())) {
       return;
     }
 
-    acquireBuffersToConvert.push_back(acquireBuffer);
+    allocsToConvert.push_back(allocOp);
   });
 
-  // Transform each acquire_buffer to reserve
-  for (AcquireBufferOp acquireBuffer : acquireBuffersToConvert) {
-    Location loc = acquireBuffer.getLoc();
-    unsigned operandIndex = acquireBuffer.getOperandIndex().value();
+  // Transform each memref.alloc to reserve
+  for (memref::AllocOp allocOp : allocsToConvert) {
+    Location loc = allocOp.getLoc();
+    
+    // Find the associated operand
+    std::optional<Value> assocOperand = findAssocOperand(allocOp);
+    if (!assocOperand.has_value()) {
+      allocOp.emitWarning(
+          "could not determine associated operand, skipping conversion");
+      continue;
+    }
 
-    Value assocCb =
-        findCBByOperandIndex(acquireBuffer.getOperation(), operandIndex);
+    // Find the CB for the associated operand
+    Value assocCb = findCBByOperand(allocOp.getOperation(), *assocOperand);
     if (!assocCb) {
-      acquireBuffer.emitWarning(
+      allocOp.emitWarning(
           "could not find associated CB block argument, skipping conversion");
       continue;
     }
 
-    rewriter.setInsertionPoint(acquireBuffer);
+    rewriter.setInsertionPoint(allocOp);
 
     // Create reserve operation
     // %out = d2m.reserve %cb
     auto reserveOp = rewriter.create<ReserveOp>(loc, assocCb);
 
-    // Replace all uses of acquire_buffer result with reserve result
-    rewriter.replaceAllUsesWith(acquireBuffer.getResult(),
+    // Replace all uses of memref.alloc result with reserve result
+    rewriter.replaceAllUsesWith(allocOp.getResult(),
                                 reserveOp.getResult());
 
     // Track reserve op for push insertion (deferred to Pass B)
     info.reserveOpsNeedingPush.push_back({reserveOp, assocCb});
 
-    // Erase the original acquire_buffer operation
-    rewriter.eraseOp(acquireBuffer);
+    // Erase the original memref.alloc operation
+    rewriter.eraseOp(allocOp);
   }
 
   // Transform RemoteStoreOp (implicit form -> explicit CB form)
