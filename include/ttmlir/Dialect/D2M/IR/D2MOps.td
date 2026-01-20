@@ -347,6 +347,7 @@ def D2M_GenericOp : D2M_Op<"generic",
       bool hasComputeOpsInRegion(unsigned regionIndex = 0);
       bool isNontriviallyEltwiseFused();
       static Value findAssocOperand(memref::AllocOp allocOp);
+      static Value findAssocOperand(::mlir::tensor::EmptyOp emptyOp);
       static Value findAssocCBByOperandIndex(Operation *op, unsigned operandIndex);
       static Value findAssocCBByOperand(Operation *op, Value operand);
     }];

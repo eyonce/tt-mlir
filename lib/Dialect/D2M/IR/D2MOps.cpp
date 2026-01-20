@@ -2200,6 +2200,35 @@ Value d2m::GenericOp::findAssocOperand(memref::AllocOp allocOp) {
   return associatedOperand;
 }
 
+Value d2m::GenericOp::findAssocOperand(mlir::tensor::EmptyOp emptyOp) {
+  // First check that the tensor.empty is within a generic op
+  GenericOp genericOp = emptyOp->getParentOfType<GenericOp>();
+  if (!genericOp) {
+    return Value();
+  }
+
+  // Assert that the parent GenericOp has a single output
+  int64_t numOutputs = static_cast<int64_t>(genericOp.getOutputs().size());
+  TT_assertv(numOutputs == 1,
+             "tensor.empty within generic op with multiple outputs - "
+             "cannot determine associated operand");
+
+  // By default, assume the associated operand is the sole output operand
+  Value associatedOperand = genericOp.getOutputs()[0];
+
+  // If one of the uses is a RemoteStoreOp, the associated operand is
+  // the memref of the RemoteStoreOp
+  Value emptyResult = emptyOp.getResult();
+  for (Operation *userOp : emptyResult.getUsers()) {
+    if (auto storeOp = mlir::dyn_cast<RemoteStoreOp>(userOp)) {
+      associatedOperand = storeOp.getMemref();
+      break;
+    }
+  }
+
+  return associatedOperand;
+}
+
 Value d2m::GenericOp::findAssocCBByOperandIndex(Operation *op,
                                                  unsigned operandIndex) {
   GenericOp generic = op->getParentOfType<GenericOp>();
