@@ -87,22 +87,6 @@ func.func @test_remote_store_with_local_buffer(
   return
 }
 
-// CHECK-LABEL: @test_remote_store_with_local_buffer_multicast
-func.func @test_remote_store_with_local_buffer_multicast(
-    %remote_dst: memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>,
-    %local_buffer: memref<2x4x!ttcore.tile<32x32, f32>, #l1_>) {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c2 = arith.constant 2 : index
-
-  // RemoteStoreOp with local buffer and multicast (implicit form)
-  // Result is required but must be unused when using memref types
-  // CHECK: %{{.*}} = d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] %{{.*}} core[%{{.*}}, %{{.*}}] mcast[%{{.*}}, %{{.*}}] : memref<{{.*}}>, memref<{{.*}}> -> memref<{{.*}}>
-  %result = d2m.remote_store %remote_dst[%c0, %c1] %local_buffer core[%c0, %c0] mcast[%c1, %c2] : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>, memref<2x4x!ttcore.tile<32x32, f32>, #l1_> -> memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>
-
-  return
-}
-
 //===----------------------------------------------------------------------===//
 // RemoteStoreOp Tests - Explicit CB Form (circular buffer)
 //===----------------------------------------------------------------------===//
@@ -117,21 +101,6 @@ func.func @test_remote_store_with_cb(
   // RemoteStoreOp with CB (explicit CB form) - basic case
   // CHECK: d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] from %{{.*}} : memref<{{.*}}> from !d2m.cb<memref<{{.*}}>
   d2m.remote_store %remote_dst[%c0, %c1] from %cb : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram> from !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1_>>
-
-  return
-}
-
-// CHECK-LABEL: @test_remote_store_with_cb_multicast
-func.func @test_remote_store_with_cb_multicast(
-    %remote_dst: memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>,
-    %cb: !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1_>>) {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c2 = arith.constant 2 : index
-
-  // RemoteStoreOp with CB and multicast (explicit CB form)
-  // CHECK: d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] from %{{.*}} core[%{{.*}}, %{{.*}}] mcast[%{{.*}}, %{{.*}}] : memref<{{.*}}> from !d2m.cb<memref<{{.*}}>
-  d2m.remote_store %remote_dst[%c0, %c1] from %cb core[%c0, %c0] mcast[%c1, %c2] : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram> from !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1_>>
 
   return
 }

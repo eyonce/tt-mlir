@@ -831,12 +831,6 @@ public:
     // Get grid indices from the remote_store operation
     SmallVector<Value> gridIndices = remoteStore.getIndices();
 
-    // Multicast remote_store is not supported
-    TT_assertv(!remoteStore.isMcast(),
-               "Multicast remote_store operations are not supported. "
-               "Operation at {0}",
-               remoteStore.getLoc());
-
     // Generate DMA writes with proper coalescing
     Value dmaTx = generateDMAWrites(rewriter, loc, remoteMemref, gridIndices,
                                     shardShape, remoteMemoryMap, localMemoryMap,

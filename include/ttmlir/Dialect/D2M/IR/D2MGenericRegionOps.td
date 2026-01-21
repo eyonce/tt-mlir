@@ -1191,76 +1191,36 @@ def D2M_RemoteLoadOp : D2M_GenericRegionDatamovementOp<"remote_load",
   ]> {
     let summary = "D2M Remote/Aliased Load Op";
     let description = [{
-      Loads an entire shard into a circular buffer using affine indexing.
-      This operation is well-defined for two primary use cases:
-      1. Loading from remote memory locations (memrefs/tensors with device layouts)
-      2. Loading from local aliased circular buffer memory
+      Loads an _entire shard_ from remote or local GenericOp opearand into a new
+      local L1 buffer. The memref/tensor argument _must_ be an operand of the
+      GenericOp.
 
-      This operation operates at shard granularity on memrefs or tensors.
+      RemoteLoadOp is indices correspond to the _grid dimensions only_ (first
+      N/2 dimensions of the device shape). The RemoteLoadOp always loads an
+      entire shard from the corresponding operand.
 
-      D2M device memrefs and tensors have a device shape that follows a grid x shard convention:
-      - For a logical shape with N dimensions, the device shape has 2N dimensions
-      - The first N dimensions are grid dimensions (sharding distribution)
-      - The last N dimensions are shard dimensions (dimensions of each shard)
-
-      Example 1: 2D tensor with logical shape NxM and grid PxQ
-      - Device shape: P x Q x (N/P) x (M/Q)
-      - Grid dimensions: P x Q (first 2 dims)
-      - Shard dimensions: (N/P) x (M/Q) (last 2 dims)
-
-      Example 2: 3D tensor with logical shape NxMxO and shard AxBxC
-      - Device shape: (N/A) x (M/B) x (O/C) x A x B x C
-      - Grid dimensions: (N/A) x (M/B) x (O/C) (first 3 dims)
-      - Shard dimensions: A x B x C (last 3 dims)
-
-      The `d2m.remote_load` op is indexed by the grid dimensions only (first N/2 dimensions
-      of the device shape) and loads the entire shard (all elements in the last N/2 dimensions)
-      into the circular buffer.
+      This operation is well-defined for both remote and local tensors. Backend
+      DMA passes opportunistically lower this operation to aliased CB operations
+      if possible, but the semantics for remote and local tensors are identical.
 
       Example (remote memory):
 
       ```mlir
-      // For a 2D device memref with shape P x Q x (N/P) x (M/Q)
-      // Index by grid dimensions P x Q only, load into circular buffer
-      d2m.remote_load %cb, %memref[%i, %j] : !d2m.cb<memref<(N/P)x(M/Q)xf32, #l1_>>, memref<PxQx(N/P)x(M/Q)xf32, #ttcore.shard<...>, #dram>
-
-      // Can also work with tensors
-      d2m.remote_load %cb, %tensor[%i, %j] : !d2m.cb<tensor<(N/P)x(M/Q)xf32>>, tensor<PxQx(N/P)x(M/Q)xf32, #ttcore.shard<...>, #dram>
-      ```
-
-      Example (local aliased CB memory):
-
-      ```mlir
-      // Load from local aliased CB buffer into another CB
-      d2m.remote_load %cb_dst, %local_buffer[%i] : !d2m.cb<memref<4x6xf32, #l1_>>, memref<8x4x6xf32, #l1_>
-      ```
-
-      ## Low-Level Multicast Mode
-
-      When low-level multicast parameters (mcore/mshape) are provided, this operation
-      performs a gather-multicast pattern:
-      - By convention, core 0 along each multicast dimension is the sender
-      - The sender gathers the remote data into local memory
-      - The sender then multicasts to all cores in the region starting at
-        `mcastStartIndex` with shape `mcastShape`
-      - Receivers wait for the sender to complete
-
-      Example with low-level multicast:
-
-      ```mlir
-      // Core 0 gathers and multicasts to a 1x4 region starting at mcore[0, 1]
-      d2m.remote_load %cb, %memref[%i, %j] mcore[%c0, %c1] mshape[%c1, %c4]
-        : !d2m.cb<memref<4x6xf32, #l1_>>, memref<2x4x4x6xf32, #ttcore.shard<...>, #dram>
-        -> memref<4x6xf32, #l1_>
+      // For a 2D device memref with shape (GY x GX) x (SY x SX)
+      d2m.remote_load %generic_operand[%i, %j] : memref<GY x GX x SY x SX x f32, ...> -> memref<SY x SX x f32, ...>
       ```
 
       ## High-Level Multicast Mode
 
-      When high-level multicast dimension list (mcast) is provided, this operation
-      performs a cooperative multicast gather along the specified dimensions:
-      - The dimension indices specify which grid dimensions participate in the multicast
-      - Core 0 along each specified dimension is the sender
-      - The sender gathers and broadcasts to all cores along those dimensions
+      When a high-level multicast dimension list (mcast) is provided, this
+      operation performs a cooperative multicast along the parallel dimension
+      specified. All locations in the compute grid that share the same mcast dim value
+      will form a multicast group *if all non-mcast dims are reduction dims*.
+
+      The sender vs receiver roles in the multicast group are determined by convention.
+
+      NOTE: If implementing the high-level multicast is not feasible, the
+      operation will be lowered to an equivalent unicast remote load instead.
 
       Example with high-level multicast:
 
@@ -1271,15 +1231,38 @@ def D2M_RemoteLoadOp : D2M_GenericRegionDatamovementOp<"remote_load",
         -> memref<4x6xf32, #l1_>
       ```
 
+      ## Low-Level Multicast Mode
+
+      WARNING: This form is currently supported mostly for internal use within
+      middle-end pipeline. Picking a concrete multicast shape implicitly
+      constrains that the layout of the operand, but this isn't handled properly
+      in the frontend grid selection.
+
+      When low-level multicast parameters (mcore/mshape) are provided, this
+      operation performs a gather-multicast pattern:
+        - By convention, core 0 along each multicast dimension is the sender
+        - The sender reads the remote data into local memory
+        - The sender then multicasts to all other cores in the mcast group
+        starting at `mcastStartIndex` with shape `mcastShape`
+        - Receivers wait for the sender to complete
+
+      Example with low-level multicast:
+
+      ```mlir
+      // Core 0 gathers and multicasts to a 1x4 region starting at mcore[0, 1]
+      d2m.remote_load %cb, %memref[%i, %j] mcore[%c0, %c1] mshape[%c1, %c4]
+        : !d2m.cb<memref<4x6xf32, #l1_>>, memref<2x4x4x6xf32, #ttcore.shard<...>, #dram>
+        -> memref<4x6xf32, #l1_>
+      ```
+
       Constraints:
-      - The memref/tensor may be remote (have a device layout) or local (aliased CB memory)
-      - For remote memrefs/tensors, the operation always uses an identity affine map for grid dimensions
-      - For remote memrefs/tensors, the number of indices must equal N/2 where N is the memref/tensor rank (grid dimensions)
-      - For local aliased CB buffers, indexing follows standard affine semantics
-      - The operation loads the entire shard into the circular buffer
-      - The circular buffer's underlying type must match the shard shape
-      - If mcastStartIndex is provided, mcastShape must also be provided (and vice versa)
-      - The two multicast forms are mutually exclusive: either use low-level (mcore/mshape) or high-level (mcast dims), not both
+      - The number of indices must equal N/2, where N is the memref/tensor rank.
+      - The operation loads the entire shard into a new local L1 buffer
+      - If in explicit CB form:
+        - The operand provided must be a memref
+        - The CB and operand memref must have the same result type
+      - The two multicast forms are mutually exclusive: either use low-level
+      (mcore/mshape) or high-level (mcast dims), not both
     }];
 
     let arguments = (ins Optional<D2M_CB>:$cb,
@@ -1457,21 +1440,6 @@ def D2M_RemoteStoreOp : D2M_GenericRegionDatamovementOp<"remote_store",
       %result = d2m.remote_store %local_buffer_dst[%i] %local_buffer_src : memref<8x4x6xf32, #l1_>, memref<4x6xf32, #l1_> -> memref<8x4x6xf32, #l1_>
       ```
 
-      ## Multicast Mode
-
-      When multicast parameters are provided, this operation performs a multicast pattern:
-      - By convention, core 0 along each multicast dimension is the sender
-      - The sender multicasts the data to all cores in the region starting at
-        `mcastStartIndex` with shape `mcastShape`
-
-      Example with multicast:
-
-      ```mlir
-      // Core 0 multicasts to a 1x4 region starting at core[0, 1] and stores to remote
-      d2m.remote_store %memref[%i, %j] %local_buffer core[%c0, %c1] mcast[%c1, %c4]
-        : memref<2x4x4x6xf32, #ttcore.shard<...>, #dram>, memref<4x6xf32, #l1_>
-      ```
-
       Constraints:
       - The memref/tensor may be remote (have a device layout) or local (aliased CB memory)
       - For remote memrefs/tensors, the operation always uses an identity affine map for grid dimensions
@@ -1481,16 +1449,13 @@ def D2M_RemoteStoreOp : D2M_GenericRegionDatamovementOp<"remote_store",
       - Explicit CB form (cb present): result must NOT be present
       - Implicit form (localBuffer present): result MUST be present
       - The local buffer or circular buffer's underlying type must match the shard shape
-      - If mcastStartIndex is provided, mcastShape must also be provided (and vice versa)
     }];
 
     let arguments = (ins Arg<AnyRankedTensorOrMemRef, "the reference to store to",
         [MemWrite]>:$memref,
         Variadic<Index>:$indices,
         Optional<AnyRankedTensorOrMemRef>:$localBuffer,
-        Optional<D2M_CB>:$cb,
-        Variadic<Index>:$mcastStartIndex,
-        Variadic<Index>:$mcastShape);
+        Optional<D2M_CB>:$cb);
 
     let results = (outs Optional<AnyRankedTensorOrMemRef>:$result);
 
@@ -1498,28 +1463,16 @@ def D2M_RemoteStoreOp : D2M_GenericRegionDatamovementOp<"remote_store",
       // Explicit CB form (with CB, no result)
       OpBuilder<(ins "Value":$memref, "ValueRange":$indices, "Value":$cb),
       [{
-        build($_builder, $_state, /*result=*/TypeRange{}, memref, indices, /*localBuffer=*/Value{}, cb, ValueRange(), ValueRange());
-      }]>,
-      // Explicit CB form with multicast (with CB, no result)
-      OpBuilder<(ins "Value":$memref, "ValueRange":$indices, "Value":$cb,
-                     "ValueRange":$mcastStartIndex, "ValueRange":$mcastShape),
-      [{
-        build($_builder, $_state, /*result=*/TypeRange{}, memref, indices, /*localBuffer=*/Value{}, cb, mcastStartIndex, mcastShape);
+        build($_builder, $_state, /*result=*/TypeRange{}, memref, indices, /*localBuffer=*/Value{}, cb);
       }]>,
       // Implicit form with local buffer and result (required)
       OpBuilder<(ins "Type":$resultType, "Value":$memref, "ValueRange":$indices, "Value":$localBuffer),
       [{
-        build($_builder, $_state, resultType, memref, indices, localBuffer, /*cb=*/Value{}, ValueRange(), ValueRange());
-      }]>,
-      // Implicit form with local buffer, multicast, and result (required)
-      OpBuilder<(ins "Type":$resultType, "Value":$memref, "ValueRange":$indices, "Value":$localBuffer,
-                     "ValueRange":$mcastStartIndex, "ValueRange":$mcastShape),
-      [{
-        build($_builder, $_state, resultType, memref, indices, localBuffer, /*cb=*/Value{}, mcastStartIndex, mcastShape);
+        build($_builder, $_state, resultType, memref, indices, localBuffer, /*cb=*/Value{});
       }]>
     ];
 
-    let assemblyFormat = [{ $memref `[` $indices `]` ($localBuffer^)? (`from` $cb^)? (`core` `[` $mcastStartIndex^ `]` `mcast` `[` $mcastShape `]`)? attr-dict `:` type($memref) (`,` type($localBuffer)^)? (`from` type($cb)^)? (`->` type($result)^)? }];
+    let assemblyFormat = [{ $memref `[` $indices `]` ($localBuffer^)? (`from` $cb^)? attr-dict `:` type($memref) (`,` type($localBuffer)^)? (`from` type($cb)^)? (`->` type($result)^)? }];
 
     let hasVerifier = 1;
 
@@ -1564,9 +1517,6 @@ def D2M_RemoteStoreOp : D2M_GenericRegionDatamovementOp<"remote_store",
         }
         llvm_unreachable("getMemRefType() called on tensor operand, use getShapedType() instead");
       }
-
-      /// Returns true if this is a multicast operation.
-      bool isMcast() { return !getMcastShape().empty(); }
     }];
   }
 

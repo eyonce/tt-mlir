@@ -575,14 +575,6 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
            << getIndices().size() << " indices but expected " << gridRank;
   }
 
-  // Verify multicast parameters: both must be provided or neither
-  if (!getMcastStartIndex().empty() && getMcastShape().empty()) {
-    return emitOpError("mcast start index requires mcast shape");
-  }
-  if (!getMcastShape().empty() && getMcastStartIndex().empty()) {
-    return emitOpError("mcast shape requires mcast start index");
-  }
-
   // Verify that memref references a generic op operand when inside a generic
   if (auto genericOp = getOperation()->getParentOfType<GenericOp>()) {
     Value memrefOperand = getMemref();
@@ -918,8 +910,7 @@ mlir::LogicalResult RemoteStoreOp::bufferize(
   // NOLINTNEXTLINE
   mlir::bufferization::replaceOpWithNewBufferizedOp<RemoteStoreOp>(
       rewriter, *this, resultBufferType, *memrefBuffer, getIndices(),
-      localBufferBufferized, /*cb=*/Value{}, getMcastStartIndex(),
-      getMcastShape());
+      localBufferBufferized, /*cb=*/Value{});
 
   return mlir::success();
 }

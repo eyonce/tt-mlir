@@ -76,22 +76,3 @@ func.func @test_remote_store_with_local_buffer_tensor(
 
   return
 }
-
-// CHECK-LABEL: @test_remote_store_with_local_buffer_multicast_tensor
-// BUFFERIZE-LABEL: @test_remote_store_with_local_buffer_multicast_tensor
-func.func @test_remote_store_with_local_buffer_multicast_tensor(
-    %remote_dst: tensor<2x4x2x4x!ttcore.tile<32x32, f32>, #remote_layout>,
-    %local_buffer: tensor<2x4x!ttcore.tile<32x32, f32>>) {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c2 = arith.constant 2 : index
-
-  // RemoteStoreOp with local buffer and multicast (implicit form), tensor variant
-  // Result is required for implicit form. For tensors it can be used, but after bufferization
-  // to memrefs it must be unused.
-  // CHECK: %{{.*}} = d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] %{{.*}} core[%{{.*}}, %{{.*}}] mcast[%{{.*}}, %{{.*}}] : tensor<{{.*}}>, tensor<{{.*}}> -> tensor<{{.*}}>
-  // BUFFERIZE: %{{.*}} = d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] %{{.*}} core[%{{.*}}, %{{.*}}] mcast[%{{.*}}, %{{.*}}] : memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #[[DRAM]]>, memref<2x4x!ttcore.tile<32x32, f32>> -> memref<2x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #[[DRAM]]>
-  %result = d2m.remote_store %remote_dst[%c0, %c1] %local_buffer core[%c0, %c0] mcast[%c1, %c2] : tensor<2x4x2x4x!ttcore.tile<32x32, f32>, #remote_layout>, tensor<2x4x!ttcore.tile<32x32, f32>> -> tensor<2x4x2x4x!ttcore.tile<32x32, f32>, #remote_layout>
-
-  return
-}

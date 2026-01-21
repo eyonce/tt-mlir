@@ -381,48 +381,6 @@ module attributes {ttcore.system_desc = #system_desc} {
     return
   }
 
-  // Test RemoteStoreOp with multicast parameters preservation during conversion
-  // CHECK-LABEL: func.func @test_remote_store_multicast_params
-  // CHECK: d2m.reserve %cb1
-  // CHECK: d2m.remote_store %{{.*}}[%{{.*}}, %{{.*}}] from %cb1 core[%{{.*}}, %{{.*}}] mcast[%{{.*}}, %{{.*}}]
-  // CHECK: d2m.push %cb1
-  func.func @test_remote_store_multicast_params(%arg0: memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #l1>,
-                                                 %arg1: memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>) {
-    %cb_alloc = memref.alloc() {address = 5120 : i64, alignment = 16 : i64} : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #l1>
-    %stream_out = "d2m.stream_layout"(%arg1, %cb_alloc) : (memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #dram>, memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #l1>) -> memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #ttcore.view<map(4)>, #dram>
-
-    d2m.generic {block_factors = [1, 1], grid = #ttcore.grid<4x4>, indexing_maps = [#map, #map], iterator_types = [#parallel, #parallel], threads = [#d2m.thread<unified>]}
-        ins(%arg0 : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #l1>)
-        outs(%stream_out : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #ttcore.view<map(4)>, #dram>) {
-    ^unified0(%cb0: !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>, %cb1: !d2m.cb<memref<2x4x!ttcore.tile<32x32, f32>, #l1>>):
-      %c0 = arith.constant 0 : index
-      %c1 = arith.constant 1 : index
-      %c4 = arith.constant 4 : index
-      scf.for %arg3 = %c0 to %c1 step %c1 {
-        %core0 = d2m.core_index(0) : index
-        %core1 = d2m.core_index(1) : index
-        scf.for %arg4 = %c0 to %c1 step %c1 {
-          %0 = arith.addi %core0, %arg3 : index
-          %1 = arith.addi %core1, %arg4 : index
-          // memref.alloc with operand_index pointing to remote output operand
-          %buffer = memref.alloc() {operand_index = 1 : i64} : memref<2x4x!ttcore.tile<32x32, f32>>
-
-          // Simple operation using the buffer
-          affine.for %i = 0 to 2 {
-            affine.for %j = 0 to 4 {
-              %tile = affine.load %buffer[%i, %j] : memref<2x4x!ttcore.tile<32x32, f32>>
-              %exp = "d2m.tile_exp"(%tile) : (!ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32>
-              affine.store %exp, %buffer[%i, %j] : memref<2x4x!ttcore.tile<32x32, f32>>
-            }
-          }
-
-          // Implicit form with multicast parameters
-          %result = d2m.remote_store %stream_out[%0, %1] %buffer core[%c0, %c0] mcast[%c1, %c4] : memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #ttcore.view<map(4)>, #dram>, memref<2x4x!ttcore.tile<32x32, f32>> -> memref<4x4x2x4x!ttcore.tile<32x32, f32>, #ttcore.shard<16384x4096, 1>, #ttcore.view<map(4)>, #dram>
-        } {d2m.outer_loop}
-      } {d2m.outer_loop}
-    }
-    return
-  }
 
   // Test multiple remote_load operations in same generic
   // CHECK-LABEL: func.func @test_multiple_remote_loads

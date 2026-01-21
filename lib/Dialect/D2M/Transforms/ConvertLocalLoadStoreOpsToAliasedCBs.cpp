@@ -223,14 +223,6 @@ public:
     moduleOp->walk([&](RemoteStoreOp remoteStore) {
       Value memref = remoteStore.getMemref();
       if (isLocalOperand(memref, remoteStore.getOperation())) {
-        // Skip if multicast is present (shouldn't happen for local operands,
-        // but verify)
-        if (remoteStore.isMcast()) {
-          remoteStore.emitWarning(
-              "remote_store with local operand has multicast parameters, "
-              "skipping conversion");
-          return;
-        }
         remoteStoresToConvert.push_back(remoteStore);
       }
     });

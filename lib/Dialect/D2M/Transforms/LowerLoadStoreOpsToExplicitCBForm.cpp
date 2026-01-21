@@ -201,8 +201,7 @@ static void simplifyLoadStorePairsInDMAOnlyGenerics(ModuleOp moduleOp,
           loadOp.getMcastStartIndex(), loadOp.getMcastShape());
     } else if (isRemoteStore) {
       rewriter.create<RemoteStoreOp>(loc, storeMemref, loadOp.getIndices(),
-                                     inputCB, loadOp.getMcastStartIndex(),
-                                     loadOp.getMcastShape());
+                                     inputCB);
     }
 
     // ensure original store and load results are unused
@@ -379,8 +378,7 @@ static PushPopInfo convertToExplicitCBForm(ModuleOp moduleOp,
       // Create the explicit CB form of remote_store (no local buffer, has CB)
       // d2m.remote_store %memref[indices] from %cb
       rewriter.create<RemoteStoreOp>(loc, memref, remoteStore.getIndices(),
-                                     assocCb, remoteStore.getMcastStartIndex(),
-                                     remoteStore.getMcastShape());
+                                     assocCb);
 
       // Track the reserve op for push insertion (avoid duplicates)
       if (cbsWithReserveOps.insert(assocCb).second) {
