@@ -1203,12 +1203,29 @@ def D2M_RemoteLoadOp : D2M_GenericRegionDatamovementOp<"remote_load",
       DMA passes opportunistically lower this operation to aliased CB operations
       if possible, but the semantics for remote and local tensors are identical.
 
-      Example (remote memory):
+      The operation has multiple modes; the implicit/explicit forms and
+      unicast/multicast modes are both orthogonal and can be mixed and matched.
+
+      The implicit form allocates and returns a plain memref/tensor without an
+      init param; it doesn't assume a particular buffering implementation (CBs,
+      scratchpad, etc).
 
       ```mlir
-      // For a 2D device memref with shape (GY x GX) x (SY x SX)
-      d2m.remote_load %generic_operand[%i, %j] : memref<GY x GX x SY x SX x f32, ...> -> memref<SY x SX x f32, ...>
+      d2m.remote_load %generic_operand[%i, %j]
+        : memref<GY x GX x SY x SX x f32, ...> -> memref<SY x SX x f32, ...>
       ```
+
+      The explicit CB form takes a CB block arg as additional input; the load is
+      produced into the CB. The CB provided must be the CB block arg associated
+      with the operand.
+
+      ```mlir
+      d2m.remote_store %generic_operand[%i, %j] from %cb
+        : memref<GY x GX x SY x SX x f32, ...>, !d2m.cb<memref<SY x SX x f32, ...>>
+        -> memref<GY x GX x SY x SX x f32, ...>
+      ```
+
+      In all forms, the result matches the shard memref/tensor type.
 
       ## High-Level Multicast Mode
 
@@ -1383,72 +1400,47 @@ def D2M_RemoteStoreOp : D2M_GenericRegionDatamovementOp<"remote_store",
   ]> {
     let summary = "D2M Remote/Aliased Store Op";
     let description = [{
-      Stores an entire shard using affine indexing.
-      This operation is well-defined for two primary use cases:
-      1. Storing to remote memory locations (memrefs/tensors with device layouts)
-      2. Storing to local aliased circular buffer memory
+      Stores an _entire shard_ from a local buffer to remote or local GenericOp
+      operand. The memref/tensor argument _must_ be an operand of the GenericOp.
 
-      This operation operates at shard granularity on memrefs or tensors.
+      RemoteStoreOp indices correspond to the _grid dimensions only_ (first N/2
+      dimensions of the device shape). The RemoteStoreOp always stores an entire
+      shard to the corresponding operand.
 
-      The operation has two forms (mirroring RemoteLoadOp's design):
-      - Explicit CB form: `remote_store %memref[indices] from %cb` - stores from a CB, NO result
-      - Implicit form: `%result = remote_store %memref[indices] %local_buffer` - stores from local buffer, result REQUIRED
+      This operation is well-defined for both remote and local tensors. Backend
+      DMA passes opportunistically lower this operation to aliased CB operations
+      if possible, but the semantics for remote and local tensors are identical.
 
-      D2M device memrefs and tensors have a device shape that follows a grid x shard convention:
-      - For a logical shape with N dimensions, the device shape has 2N dimensions
-      - The first N dimensions are grid dimensions (sharding distribution)
-      - The last N dimensions are shard dimensions (dimensions of each shard)
-
-      Example 1: 2D tensor with logical shape NxM and grid PxQ
-      - Device shape: P x Q x (N/P) x (M/Q)
-      - Grid dimensions: P x Q (first 2 dims)
-      - Shard dimensions: (N/P) x (M/Q) (last 2 dims)
-
-      Example 2: 3D tensor with logical shape NxMxO and shard AxBxC
-      - Device shape: (N/A) x (M/B) x (O/C) x A x B x C
-      - Grid dimensions: (N/A) x (M/B) x (O/C) (first 3 dims)
-      - Shard dimensions: A x B x C (last 3 dims)
-
-      The `d2m.remote_store` op is indexed by the grid dimensions only (first N/2 dimensions
-      of the device shape) and stores the entire shard (all elements in the last N/2 dimensions).
-
-      Example (Explicit CB form - stores from CB to remote memory, no result):
+      The operation has two forms:
+      - Implicit form takes a plain memref/tensor as input to store; it doesn't
+      assume a particular buffering implementation (CBs, scratchpad, etc).
 
       ```mlir
-      // Store from circular buffer to remote memref
-      d2m.remote_store %remote_memref[%i, %j] from %cb : memref<PxQx(N/P)x(M/Q)xf32, #ttcore.shard<...>, #dram> from !d2m.cb<memref<(N/P)x(M/Q)xf32, #l1_>>
+      // For an operand with device shape (GY x GX) x (SY x SX)
+      d2m.remote_store %generic_operand[%i, %j] %buf
+        : memref<GY x GX x SY x SX x f32, ...>, memref<SY x SX x f32, ...>
+        -> memref<GY x GX x SY x SX x f32, ...>
       ```
 
-      Example (Implicit form - stores from local buffer to remote memory, returns result):
+      - Explicit CB form stores data from a concrete CB block arg to the remote operand.
 
       ```mlir
-      // Store from local buffer and return destination memref (result required)
-      %result = d2m.remote_store %remote_memref[%i, %j] %local_buffer : memref<PxQx(N/P)x(M/Q)xf32, #ttcore.shard<...>, #dram>, memref<(N/P)x(M/Q)xf32, #l1_> -> memref<PxQx(N/P)x(M/Q)xf32, #ttcore.shard<...>, #dram>
+      d2m.remote_store %generic_operand[%i, %j] from %cb
+        : memref<GY x GX x SY x SX x f32, ...>, !d2m.cb<memref<SY x SX x f32, ...>>
+        -> memref<GY x GX x SY x SX x f32, ...>
       ```
 
-      Example (Explicit CB form - circular buffer to local aliased CB memory):
-
-      ```mlir
-      // Store from circular buffer to local aliased CB buffer
-      d2m.remote_store %local_buffer_dst[%i] from %cb : memref<8x4x6xf32, #l1_> from !d2m.cb<memref<4x6xf32, #l1_>>
-      ```
-
-      Example (Implicit form - local buffer to local aliased CB memory):
-
-      ```mlir
-      // Store from local buffer to local aliased CB buffer (result required)
-      %result = d2m.remote_store %local_buffer_dst[%i] %local_buffer_src : memref<8x4x6xf32, #l1_>, memref<4x6xf32, #l1_> -> memref<8x4x6xf32, #l1_>
-      ```
+      In both forms, the result matches the type of the operand memref/tensor.
+      This allows using the result as yield value in a generic region, as well
+      as forming a complete use-chain from remote_load to remote_store.
 
       Constraints:
-      - The memref/tensor may be remote (have a device layout) or local (aliased CB memory)
-      - For remote memrefs/tensors, the operation always uses an identity affine map for grid dimensions
-      - For remote memrefs/tensors, the number of indices must equal N/2 where N is the memref/tensor rank (grid dimensions)
-      - For local aliased CB buffers, indexing follows standard affine semantics
+      - The number of indices must equal N/2, where N is the memref/tensor rank.
+      - The operation stores the entire shard from a local buffer or circular buffer
+      - If in explicit CB form:
+        - The operand provided must be a memref
+        - The CB and operand memref must have compatible shard shapes
       - Exactly one of localBuffer or cb must be present
-      - Explicit CB form (cb present): result must NOT be present
-      - Implicit form (localBuffer present): result MUST be present
-      - The local buffer or circular buffer's underlying type must match the shard shape
     }];
 
     let arguments = (ins Arg<AnyRankedTensorOrMemRef, "the reference to store to",
