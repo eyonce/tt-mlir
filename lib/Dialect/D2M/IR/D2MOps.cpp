@@ -1802,6 +1802,40 @@ mlir::AffineMap d2m::GenericOp::getIndexingMap(int64_t operandIndex) {
   return getIndexingMapsValue()[operandIndex];
 }
 
+AffineMap d2m::GenericOp::getIndexingMapForOperand(Value operand) {
+  // Find the operand index for the given value
+  for (unsigned i = 0; i < getNumOperands(); ++i) {
+    if (getOperand(i) == operand) {
+      return getIndexingMap(i);
+    }
+  }
+  TT_assertv(false, "Operand not found in GenericOp");
+  return AffineMap();
+}
+
+AffineMap d2m::GenericOp::getOutputIndexingMap() {
+  TT_assertv(getNumDpsInits() == 1,
+             "getOutputIndexingMap expects exactly one output operand");
+  return getIndexingMapForOperand(getOutputs().front());
+}
+
+mlir::SmallVector<int64_t> d2m::GenericOp::getOutputGridDimPositions() {
+  TT_assertv(getNumDpsInits() == 1,
+             "getOutputGridDimPositions expects exactly one output operand");
+  auto outputOperandIndex = getOperandIndex(getOutputs().front());
+  return getParticipatingLoopDims(outputOperandIndex);
+}
+
+int64_t d2m::GenericOp::getOperandIndex(Value operand) {
+  for (unsigned i = 0; i < getNumOperands(); ++i) {
+    if (getOperand(i) == operand) {
+      return i;
+    }
+  }
+  TT_assertv(false, "Operand not found in GenericOp");
+  return -1;
+}
+
 mlir::SmallVector<mlir::AffineMap> d2m::GenericOp::getIndexingMapsValue() {
   return llvm::map_to_vector(getIndexingMaps(), [](Attribute a) {
     return mlir::cast<AffineMapAttr>(a).getValue();

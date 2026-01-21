@@ -436,7 +436,7 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
           "operands directly");
     }
 
-    // Verify mcast dimensions are reduction dimensions in the indexing map
+    // Verify mcast dimensions are parallel iterator type
     if (!mcastDimIndices.empty()) {
       AffineMap indexingMap = genericOp.getIndexingMap(*operandIndex);
       ArrayAttr iteratorTypes = genericOp.getIteratorTypes();
@@ -454,11 +454,11 @@ DMAOp::bufferize(mlir::RewriterBase &rewriter,
           int64_t iterDimPos = dimExpr.getPosition();
           auto iterType =
               mlir::cast<ttcore::IteratorTypeAttr>(iteratorTypes[iterDimPos]);
-          if (iterType.getValue() != ttcore::IteratorType::Reduction) {
+          if (iterType.getValue() != ttcore::IteratorType::Parallel) {
             return emitOpError("mcast dimension index ")
                    << gridDim
-                   << " must correspond to a reduction iterator type, but "
-                      "found parallel";
+                   << " must correspond to a parallel iterator type, but "
+                      "found reduction";
           }
         }
       }

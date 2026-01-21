@@ -23,6 +23,7 @@
 #include "mlir/IR/TypeRange.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
@@ -385,26 +386,34 @@ protected:
 
   // Get grid dimension indices where multicast should happen.
   // Multicast is needed on grid dimensions where the indexing map has a
-  // reduction iterator type. Returns empty vector if no multicast is needed.
+  // parallel iterator type. Returns empty vector if no multicast is needed.
   static SmallVector<int64_t> getMulticastGridDims(AffineMap indexingMap,
                                                    ArrayAttr iteratorTypes) {
     SmallVector<int64_t> mcastGridDims;
 
     // Iterate over the indexing map results (one per grid dimension)
+    bool foundReductionDims = false;
     for (auto [gridDim, expr] : llvm::enumerate(indexingMap.getResults())) {
       if (auto dimExpr = mlir::dyn_cast<AffineDimExpr>(expr)) {
         int64_t iterDimPos = dimExpr.getPosition();
 
-        // Check if this iterator dimension is a reduction dimension
+        // Check if this iterator dimension is a parallel dimension
         auto iterType =
             mlir::cast<ttcore::IteratorTypeAttr>(iteratorTypes[iterDimPos]);
-        if (iterType.getValue() == ttcore::IteratorType::Reduction) {
+        if (iterType.getValue() == ttcore::IteratorType::Parallel) {
           // This grid dimension needs multicast
           mcastGridDims.push_back(static_cast<int64_t>(gridDim));
+        } else if (iterType.getValue() == ttcore::IteratorType::Reduction) {
+          foundReductionDims = true;
         }
       }
     }
 
+    // if no reduction dimensions are found, return empty vector to signal
+    // multicast is not possible
+    if (!foundReductionDims) {
+      return SmallVector<int64_t>();
+    }
     return mcastGridDims;
   }
 
@@ -428,7 +437,8 @@ protected:
 
     SmallVector<Value> operands;
 
-    // Process input operands - create remote_load operations using result form
+    // Process input operands - create remote_load operations using result
+    // form
     for (size_t i = 0; i < inputs.size(); ++i) {
       auto cbArg = block->getArgument(i);
       auto cbType = mlir::cast<d2m::CBType>(cbArg.getType());
@@ -1908,6 +1918,27 @@ void populateTTIRToD2MPatterns(MLIRContext *ctx, RewritePatternSet &patterns,
 #include "ttmlir/Conversion/Passes.h.inc"
 
 namespace {
+// Helper function to fold IterIndexOp operations by applying canonicalization
+// patterns from the D2M dialect. This will invoke the fold method for
+// IterIndexOp which can simplify operations.
+LogicalResult foldIterIndexOps(ModuleOp module, MLIRContext *ctx) {
+  RewritePatternSet patterns(ctx);
+
+  // Collect canonicalization patterns from the D2M dialect
+  if (auto *d2mDialect = ctx->getLoadedDialect<mlir::tt::d2m::D2MDialect>()) {
+    d2mDialect->getCanonicalizationPatterns(patterns);
+  }
+
+  // Apply patterns with folding enabled (applyPatternsGreedily automatically
+  // includes folding)
+  FrozenRewritePatternSet frozenPatterns(std::move(patterns));
+  if (failed(applyPatternsGreedily(module, frozenPatterns))) {
+    return failure();
+  }
+
+  return success();
+}
+
 class TTIRToD2MPass final
     : public mlir::tt::impl::TTIRToD2MBase<TTIRToD2MPass> {
 public:
@@ -1963,6 +1994,13 @@ public:
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
+      return;
+    }
+
+    // Fold IterIndexOp operations using canonicalization patterns
+    if (failed(foldIterIndexOps(module, ctx))) {
+      signalPassFailure();
+      return;
     }
   }
 };
