@@ -661,14 +661,14 @@ ethernetConfigToFlatbuffer(FlatbufferObjectCache &cache,
 }
 
 static flatbuffers::Offset<target::metal::FabricConnectionConfig>
-fabricConnectionConfigToFlatbuffer(FlatbufferObjectCache &cache,
-                      FabricConnectionConfigAttr fabricConnectionConfig) {
+fabricConnectionConfigToFlatbuffer(
+    FlatbufferObjectCache &cache,
+    FabricConnectionConfigAttr fabricConnectionConfig) {
   return target::metal::CreateFabricConnectionConfig(
-    *cache.fbb, 
-    toFlatbuffer(fabricConnectionConfig.getNocIndex()),
-    toFlatbuffer(fabricConnectionConfig.getTopology()),
-    fabricConnectionConfig.getClusterAxis(),
-    fabricConnectionConfig.getNumLinks());
+      *cache.fbb, toFlatbuffer(fabricConnectionConfig.getNocIndex()),
+      toFlatbuffer(fabricConnectionConfig.getTopology()),
+      fabricConnectionConfig.getClusterAxis(),
+      fabricConnectionConfig.getNumLinks());
 }
 
 static flatbuffers::Offset<target::metal::KernelConfig>
@@ -865,9 +865,11 @@ std::shared_ptr<void> translateTTMetalToFlatbuffer(
               symbolTable));
         }
 
-        flatbuffers::Offset<target::metal::FabricConnectionConfig> fabricConnectionConfig;
+        flatbuffers::Offset<target::metal::FabricConnectionConfig>
+            fabricConnectionConfig;
         if (enqueueProgramOp.getFabricConnectionConfigAttr()) {
-          fabricConnectionConfig = fabricConnectionConfigToFlatbuffer(cache, enqueueProgramOp.getFabricConnectionConfigAttr());
+          fabricConnectionConfig = fabricConnectionConfigToFlatbuffer(
+              cache, enqueueProgramOp.getFabricConnectionConfigAttr());
         }
 
         cqBuilder.appendCommand(
